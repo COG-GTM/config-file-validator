@@ -202,8 +202,8 @@ func TestLookupCacheHit(t *testing.T) {
 	}
 
 	// Pre-populate cache
-	cachedPath := filepath.Join(cacheDir, "example.com", "schemas", "config.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(cachedPath), 0755))
+	cachedPath, err := store.cachePathForURL("https://example.com/schemas/config.json")
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(cachedPath, []byte(`{"type":"object"}`), 0600))
 
 	path, found := store.Resolve("/project/config.json")
@@ -224,8 +224,8 @@ func TestLookupCacheExpired(t *testing.T) {
 	}
 
 	// Pre-populate cache with old mtime
-	cachedPath := filepath.Join(cacheDir, "example.com", "nonexistent.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(cachedPath), 0755))
+	cachedPath, err := store.cachePathForURL("https://example.com/nonexistent.json")
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(cachedPath, []byte(`{"type":"object"}`), 0600))
 	oldTime := time.Now().Add(-48 * time.Hour)
 	require.NoError(t, os.Chtimes(cachedPath, oldTime, oldTime))
@@ -272,7 +272,8 @@ func TestFetchAndCacheSuccess(t *testing.T) {
 
 	path, found := store.Resolve("/project/config.json")
 	require.True(t, found)
-	require.Contains(t, path, "schema.json")
+	require.Equal(t, cacheDir, filepath.Dir(path))
+	require.Contains(t, filepath.Base(path), "schema.json")
 
 	// Verify file was cached
 	data, err := os.ReadFile(path)
@@ -390,6 +391,104 @@ func TestFetchAndCacheUnwritableDir(t *testing.T) {
 	path, found := store.Resolve("/project/config.json")
 	require.True(t, found)
 	require.Equal(t, srv.URL+"/schema.json", path)
+}
+
+func TestCachePathForURLStaysInCacheDir(t *testing.T) {
+	t.Parallel()
+	cacheDir := t.TempDir()
+	store := &Store{cacheDir: cacheDir, cacheTTL: defaultCacheTTL}
+
+	urls := []string{
+		"https://www.schemastore.org/package.json",
+		"http://evil.example/../../../../.bashrc",
+		"http://evil.example/..%2f..%2f..%2f.bashrc",
+		"http://evil.example/%2e%2e/%2e%2e/escape.json",
+		"http://evil.example/schema.json%2f..%2f..%2fx",
+		"http://../../escape.json",
+		"file:///etc/passwd",
+	}
+	seen := map[string]string{}
+	for _, u := range urls {
+		p, err := store.cachePathForURL(u)
+		require.NoError(t, err, u)
+		require.Equal(t, cacheDir, filepath.Dir(p), u)
+		require.True(t, filepath.IsLocal(filepath.Base(p)), u)
+		prev, dup := seen[p]
+		require.False(t, dup, "%s and %s map to the same cache file", u, prev)
+		seen[p] = u
+	}
+}
+
+func TestFetchAndCacheTraversalURLsStayInCacheDir(t *testing.T) {
+	t.Parallel()
+	const payload = `{"pwned":true}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	root := t.TempDir()
+	cacheDir := filepath.Join(root, "a", "b", "c", "cache")
+	require.NoError(t, os.MkdirAll(cacheDir, 0755))
+
+	urls := []string{
+		srv.URL + "/../../../../escape-plain.json",
+		srv.URL + "/..%2f..%2f..%2f..%2fescape-encoded.json",
+		srv.URL + "/%2e%2e/%2e%2e/%2e%2e/%2e%2e/escape-dots.json",
+	}
+	for _, u := range urls {
+		store := &Store{
+			entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: u}},
+			cacheDir: cacheDir,
+			cacheTTL: defaultCacheTTL,
+		}
+		p, found := store.Resolve("/project/config.json")
+		require.True(t, found, u)
+		require.Equal(t, cacheDir, filepath.Dir(p), u)
+	}
+
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		require.NoError(t, err)
+		if d.IsDir() {
+			return nil
+		}
+		require.Equal(t, cacheDir, filepath.Dir(p), "file written outside cache dir: %s", p)
+		require.NotContains(t, filepath.Base(p), ".tmp", "temp file left behind: %s", p)
+		return nil
+	})
+	require.NoError(t, err)
+
+	entries, err := os.ReadDir(cacheDir)
+	require.NoError(t, err)
+	require.Len(t, entries, len(urls))
+}
+
+func TestFetchAndCacheTruncatedBody(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":`))
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	store := &Store{
+		entries: []catalogEntry{
+			{FileMatch: []string{"config.json"}, URL: srv.URL + "/schema.json"},
+		},
+		cacheDir: cacheDir,
+		cacheTTL: defaultCacheTTL,
+	}
+
+	path, found := store.Resolve("/project/config.json")
+	require.True(t, found)
+	require.Equal(t, srv.URL+"/schema.json", path)
+
+	entries, err := os.ReadDir(cacheDir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
 }
 
 func TestOpenKeepsExtensionlessFileMatch(t *testing.T) {
