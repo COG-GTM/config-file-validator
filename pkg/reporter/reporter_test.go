@@ -275,7 +275,7 @@ func Test_sarifReportMergesExternalRuns(t *testing.T) {
 	assert.Contains(t, output, `"ruleId":"external-rule"`)
 }
 
-func Test_sarifReportMergesCompatibleSARIFVersions(t *testing.T) {
+func Test_sarifReportRejectsUnsupportedSARIFVersions(t *testing.T) {
 	cases := []struct {
 		name    string
 		version string
@@ -284,6 +284,11 @@ func Test_sarifReportMergesCompatibleSARIFVersions(t *testing.T) {
 		{
 			name:    "patch version",
 			version: "2.1.1",
+			schema:  SARIFSchema,
+		},
+		{
+			name:    "minor version only",
+			version: "2.1",
 			schema:  SARIFSchema,
 		},
 		{
@@ -317,13 +322,8 @@ func Test_sarifReportMergesCompatibleSARIFVersions(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(externalPath, data, 0o600))
 
-			log, err := createSARIFReport([]Report{validReport}, SARIFMergeConfig{Files: []string{externalPath}})
-			require.NoError(t, err)
-			require.Len(t, log.Runs, 2)
-
-			sarifBytes, err := json.Marshal(log)
-			require.NoError(t, err)
-			assert.Contains(t, string(sarifBytes), `"name":"compatible-tool"`)
+			_, err = createSARIFReport([]Report{validReport}, SARIFMergeConfig{Files: []string{externalPath}})
+			require.ErrorContains(t, err, "unsupported SARIF version")
 		})
 	}
 }

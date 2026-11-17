@@ -25,11 +25,25 @@ stdout '"name": "external-tool"'
 # Invalid SARIF input fails the run
 ! exec validator --reporter=sarif:- --merge-sarif=bad.sarif good.json
 
+# Symbolic links in the merge directory are rejected without reading the target
+[!windows] symlink linkdir/x.sarif -> /dev/zero
+[!windows] ! exec validator --reporter=sarif:- --merge-sarif-dir=linkdir good.json
+[!windows] stderr 'not a regular file'
+
+# Only SARIF 2.1.0 inputs are merged
+! exec validator --reporter=sarif:- --merge-sarif=old.sarif good.json
+stderr 'unsupported SARIF version'
+
 -- good.json --
 {"key": "value"}
 
 -- cfv/sarif.toml --
 reporter = ["sarif:-"]
+
+-- linkdir/.keep --
+
+-- old.sarif --
+{"version": "2.1", "runs": [{"tool": {"driver": {"name": "old-tool"}}, "results": []}]}
 
 -- bad.sarif --
 {"not": "sarif"}
