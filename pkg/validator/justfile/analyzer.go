@@ -115,30 +115,48 @@ func (a *analyzer) checkCircularDeps(jf *Justfile) {
 	visited := make(map[string]bool)
 	inStack := make(map[string]bool)
 
-	var visit func(name string) bool
-	visit = func(name string) bool {
-		if inStack[name] {
-			return true
-		}
-		if visited[name] {
-			return false
-		}
-		visited[name] = true
-		inStack[name] = true
-		for _, dep := range depGraph[name] {
-			if visit(dep) {
-				if pos, ok := a.recipes[name]; ok {
-					a.error(pos, "recipe '%s' has a circular dependency", name)
-				}
-				return true
-			}
-		}
-		inStack[name] = false
-		return false
+	// Iterative DFS so long dependency chains cannot exhaust the goroutine stack.
+	type frame struct {
+		name string
+		next int
 	}
+	var stack []frame
 
-	for name := range depGraph {
-		visit(name)
+	for root := range depGraph {
+		if inStack[root] || visited[root] {
+			continue
+		}
+		visited[root] = true
+		inStack[root] = true
+		stack = append(stack[:0], frame{name: root})
+
+		for len(stack) > 0 {
+			top := &stack[len(stack)-1]
+			deps := depGraph[top.name]
+			if top.next >= len(deps) {
+				inStack[top.name] = false
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			dep := deps[top.next]
+			top.next++
+
+			if inStack[dep] {
+				for i := len(stack) - 1; i >= 0; i-- {
+					if pos, ok := a.recipes[stack[i].name]; ok {
+						a.error(pos, "recipe '%s' has a circular dependency", stack[i].name)
+					}
+				}
+				stack = stack[:0]
+				break
+			}
+			if visited[dep] {
+				continue
+			}
+			visited[dep] = true
+			inStack[dep] = true
+			stack = append(stack, frame{name: dep})
+		}
 	}
 }
 
@@ -185,38 +203,39 @@ func (a *analyzer) checkSettings(jf *Justfile) {
 	}
 }
 
-// walkExpr calls fn for every sub-expression in expr, depth-first.
+// walkExpr calls fn for every sub-expression in expr, depth-first in
+// pre-order. It uses an explicit stack so that deeply nested or very long
+// operator chains cannot exhaust the goroutine stack.
 func walkExpr(expr Expression, fn func(Expression)) {
-	if expr == nil {
-		return
-	}
-	fn(expr)
-	switch e := expr.(type) {
-	case *Concatenation:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
-	case *PathJoin:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
-	case *LogicalOp:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
-	case *Comparison:
-		walkExpr(e.Left, fn)
-		walkExpr(e.Right, fn)
-	case *Conditional:
-		walkExpr(e.Condition.Left, fn)
-		walkExpr(e.Condition.Right, fn)
-		walkExpr(e.Then, fn)
-		walkExpr(e.Otherwise, fn)
-	case *FunctionCall:
-		for _, arg := range e.Arguments {
-			walkExpr(arg, fn)
+	stack := []Expression{expr}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if e == nil {
+			continue
 		}
-	case *ParenExpr:
-		walkExpr(e.Inner, fn)
-	default:
-		// leaf nodes: StringLiteral, Variable, BacktickExpr
+		fn(e)
+		// Children are pushed in reverse so they are visited left to right.
+		switch e := e.(type) {
+		case *Concatenation:
+			stack = append(stack, e.Right, e.Left)
+		case *PathJoin:
+			stack = append(stack, e.Right, e.Left)
+		case *LogicalOp:
+			stack = append(stack, e.Right, e.Left)
+		case *Comparison:
+			stack = append(stack, e.Right, e.Left)
+		case *Conditional:
+			stack = append(stack, e.Otherwise, e.Then, e.Condition.Right, e.Condition.Left)
+		case *FunctionCall:
+			for i := len(e.Arguments) - 1; i >= 0; i-- {
+				stack = append(stack, e.Arguments[i])
+			}
+		case *ParenExpr:
+			stack = append(stack, e.Inner)
+		default:
+			// leaf nodes: StringLiteral, Variable, BacktickExpr
+		}
 	}
 }
 
