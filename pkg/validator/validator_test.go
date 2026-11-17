@@ -4,9 +4,13 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -121,6 +125,40 @@ func writeTestSchema(t *testing.T) string {
 	return p
 }
 
+// propertiesChain returns n keys where a0=x and each later key refers to
+// the previous key using refFormat.
+func propertiesChain(n int, refFormat string) []byte {
+	var b strings.Builder
+	b.WriteString("a0=x\n")
+	for i := 1; i < n; i++ {
+		ref := strings.ReplaceAll(refFormat, "%d", strconv.Itoa(i-1))
+		fmt.Fprintf(&b, "a%d=%s\n", i, ref)
+	}
+	return []byte(b.String())
+}
+
+func TestPropValidatorExpansionBomb(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan struct{})
+	var (
+		valid bool
+		err   error
+	)
+	go func() {
+		defer close(done)
+		valid, err = PropValidator{}.ValidateSyntax(propertiesChain(40, "${a%d}${a%d}"))
+	}()
+
+	select {
+	case <-done:
+		require.NoError(t, err)
+		require.True(t, valid)
+	case <-time.After(time.Second):
+		t.Fatal("ValidateSyntax did not return within 1s for a 40-line doubling chain")
+	}
+}
+
 var testData = []struct {
 	name           string
 	testInput      []byte
@@ -140,6 +178,12 @@ var testData = []struct {
 	{"invalidIni", []byte(`\nCatalog hidden\n`), false, IniValidator{}},
 	{"validProperties", []byte("key=value\nkey2=${key}"), true, PropValidator{}},
 	{"invalidProperties", []byte("key=${key}"), false, PropValidator{}},
+	{"invalidPropertiesIndirectCycle", []byte("a=${b}\nb=${c}\nc=${a}"), false, PropValidator{}},
+	{"invalidPropertiesMalformedReference", []byte("a=x\nb=${a"), false, PropValidator{}},
+	{"validPropertiesSharedReference", []byte("a=x\nb=${a}${a}\nc=${b}-${a}"), true, PropValidator{}},
+	{"validPropertiesUndefinedReference", []byte("a=${undefined.key}"), true, PropValidator{}},
+	{"validPropertiesMaxDepth", propertiesChain(64, "${a%d}"), true, PropValidator{}},
+	{"invalidPropertiesTooDeep", propertiesChain(65, "${a%d}"), false, PropValidator{}},
 	{"validHcl", []byte(`key = "value"`), true, HclValidator{}},
 	{"invalidHcl", []byte(`"key" = "value"`), false, HclValidator{}},
 	{"multipleInvalidHcl", []byte(`"key1" = "value1"\n"key2"="value2"`), false, HclValidator{}},
