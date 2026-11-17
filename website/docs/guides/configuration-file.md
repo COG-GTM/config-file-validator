@@ -82,6 +82,8 @@ forbid-duplicate-keys = true
 | `type-map`           | table            | —              | Map glob patterns to file types                                     |
 | `validators`         | table            | —              | Per-validator options (see below)                                   |
 
+Output file paths in `reporter` entries must resolve (after following symlinks) to a location inside the directory that contains the config file. Use the `--reporter` flag to write reports elsewhere.
+
 ## Schema and type maps
 
 Both `schema-map` and `type-map` are TOML tables where keys are glob patterns and values are paths (for schemas) or type names (for type-map).

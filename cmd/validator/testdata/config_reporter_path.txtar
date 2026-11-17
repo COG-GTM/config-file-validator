@@ -1,0 +1,39 @@
+# A discovered .cfv.toml cannot make a reporter write outside its directory
+cd project
+! exec validator .
+stderr 'outside the config file directory'
+! exists $WORK/outside.txt
+! exists $WORK/victim.txt
+
+# Symlinked output inside the project is rejected too
+symlink link.txt -> ../victim.txt
+! exec validator --config=symlink.toml .
+stderr 'outside the config file directory'
+! exists $WORK/victim.txt
+
+# Unknown reporter type in a config file is rejected
+! exec validator --config=badtype.toml .
+stderr 'only supports standard, json, junit, sarif, or github'
+
+# Output paths inside the config directory still work
+exec validator --config=inside.toml .
+exists report.txt
+
+# CLI --reporter overrides the config file
+exec validator --reporter=standard:$WORK/cli.txt .
+exists $WORK/cli.txt
+
+-- project/.cfv.toml --
+reporter = ["standard:../outside.txt"]
+
+-- project/symlink.toml --
+reporter = ["standard:link.txt"]
+
+-- project/badtype.toml --
+reporter = ["bogus"]
+
+-- project/inside.toml --
+reporter = ["standard:report.txt"]
+
+-- project/good.json --
+{"a": 1}

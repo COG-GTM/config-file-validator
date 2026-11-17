@@ -1015,6 +1015,89 @@ func parseSchemaMapFlags(flags schemaMapFlags) (map[string]string, error) {
 	return result, nil
 }
 
+var reporterDefaultFileNames = map[string]string{
+	"standard": "result.txt",
+	"github":   "result.txt",
+	"json":     "result.json",
+	"junit":    "result.xml",
+	"sarif":    "result.sarif",
+}
+
+// confineReporterOutputs rejects reporter output paths from a config file
+// that resolve, after following symlinks, outside the config file's directory.
+func confineReporterOutputs(conf []reporterConfig, baseDir string) error {
+	base, err := resolvePath(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolving config directory: %w", err)
+	}
+	for _, rc := range conf {
+		if rc.outputDest == "" {
+			continue
+		}
+		target, err := resolvePath(rc.outputDest)
+		if err != nil {
+			return fmt.Errorf("resolving output path %q: %w", rc.outputDest, err)
+		}
+		if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+			target, err = resolvePath(filepath.Join(target, reporterDefaultFileNames[rc.reportType]))
+			if err != nil {
+				return fmt.Errorf("resolving output path %q: %w", rc.outputDest, err)
+			}
+		}
+		if !isWithinDir(base, target) {
+			return fmt.Errorf("output path %q is outside the config file directory %s", rc.outputDest, baseDir)
+		}
+	}
+	return nil
+}
+
+// resolvePath returns the absolute path with symlinks evaluated, including
+// dangling symlinks and path components that do not exist yet.
+func resolvePath(path string) (string, error) {
+	return resolvePathDepth(path, 0)
+}
+
+func resolvePathDepth(path string, depth int) (string, error) {
+	if depth > 40 {
+		return "", errors.New("too many levels of symbolic links")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var rest []string
+	current := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		if link, lerr := os.Readlink(current); lerr == nil {
+			if !filepath.IsAbs(link) {
+				link = filepath.Join(filepath.Dir(current), link)
+			}
+			return resolvePathDepth(filepath.Join(append([]string{link}, rest...)...), depth+1)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return abs, nil
+		}
+		rest = append([]string{filepath.Base(current)}, rest...)
+		current = parent
+	}
+}
+
+func isWithinDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
 func applyConfigFile(cfg *validatorConfig) (*configfile.ValidatorOptions, error) {
 	if *cfg.noConfig {
 		return nil, nil
@@ -1060,11 +1143,19 @@ func applyConfigFile(cfg *validatorConfig) (*configfile.ValidatorOptions, error)
 		if err != nil {
 			return nil, fmt.Errorf("config file reporter: %w", err)
 		}
+		if err := confineReporterOutputs(conf, filepath.Dir(cfgPath)); err != nil {
+			return nil, fmt.Errorf("config file reporter: %w", err)
+		}
 		cfg.reportType = conf
 	}
 	if !isFlagSet("groupby") && len(fileCfg.GroupBy) > 0 {
 		v := strings.Join(fileCfg.GroupBy, ",")
 		cfg.groupOutput = &v
+	}
+	if !isFlagSet("reporter") && len(fileCfg.Reporter) > 0 {
+		if err := validateReporterConf(cfg.reportType, cfg.groupOutput); err != nil {
+			return nil, fmt.Errorf("config file reporter: %w", err)
+		}
 	}
 	if !isFlagSet("quiet") && fileCfg.Quiet != nil {
 		cfg.quiet = fileCfg.Quiet

@@ -3,7 +3,9 @@ package reporter
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/fatih/color"
 )
@@ -50,7 +52,7 @@ func printGroupNodeStdout(node *GroupNode, groupPath []string, depth int) summar
 	totalSummary := summary{}
 
 	for _, child := range node.Children {
-		fmt.Printf("%s%s\n", strings.Repeat("    ", depth), child.Key)
+		fmt.Printf("%s%s\n", strings.Repeat("    ", depth), escapeControlChars(child.Key))
 		childSummary := printGroupNodeStdout(child, append(slices.Clone(groupPath), child.Key), depth+1)
 		totalSummary.Passed += childSummary.Passed
 		totalSummary.Failed += childSummary.Failed
@@ -114,7 +116,7 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 	for _, report := range reports {
 		if !report.IsValid {
 			fmtRed := color.New(color.FgRed)
-			result.Text += fmtRed.Sprintf("%s× %s\n", indent, report.FilePath)
+			result.Text += fmtRed.Sprintf("%s× %s\n", indent, escapeControlChars(report.FilePath))
 			for _, e := range report.ValidationErrors {
 				paddedString := padErrorString(e)
 				result.Text += fmtRed.Sprintf("%serror: %v\n", errIndent, paddedString)
@@ -125,7 +127,7 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 			}
 			result.Summary.Failed++
 		} else {
-			result.Text += color.New(color.FgGreen).Sprintf("%s✓ %s\n", indent, report.FilePath)
+			result.Text += color.New(color.FgGreen).Sprintf("%s✓ %s\n", indent, escapeControlChars(report.FilePath))
 			result.Summary.Passed++
 		}
 		for _, w := range report.Warnings {
@@ -135,6 +137,24 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 	}
 
 	return result
+}
+
+// escapeControlChars replaces control characters such as line breaks with
+// their Go escape sequences so file names cannot inject extra report lines.
+func escapeControlChars(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			quoted := strconv.QuoteRune(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // padErrorString adds padding to every newline in the error
