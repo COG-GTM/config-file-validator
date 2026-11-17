@@ -16,6 +16,9 @@ type SourcePosition struct {
 	Column int
 }
 
+// positionLookup returns the source position for a gojsonschema error context.
+type positionLookup func(ctx *gojsonschema.JsonContext) (SourcePosition, bool)
+
 func JSONSchemaValidate(schemaURL string, docJSON []byte) (bool, error) {
 	return validateJSONSchema(schemaURL, docJSON, nil)
 }
@@ -24,10 +27,17 @@ func JSONSchemaValidate(schemaURL string, docJSON []byte) (bool, error) {
 // annotates errors with source positions from posMap. The map keys are
 // gojsonschema context strings like "(root).name".
 func JSONSchemaValidateWithPositions(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
-	return validateJSONSchema(schemaURL, docJSON, posMap)
+	var lookup positionLookup
+	if posMap != nil {
+		lookup = func(ctx *gojsonschema.JsonContext) (SourcePosition, bool) {
+			sp, ok := posMap[ctx.String()]
+			return sp, ok
+		}
+	}
+	return validateJSONSchema(schemaURL, docJSON, lookup)
 }
 
-func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
+func validateJSONSchema(schemaURL string, docJSON []byte, lookup positionLookup) (bool, error) {
 	schemaLoader := gojsonschema.NewReferenceLoader(schemaURL)
 	documentLoader := gojsonschema.NewBytesLoader(docJSON)
 
@@ -42,8 +52,8 @@ func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]Sour
 		for _, desc := range result.Errors() {
 			errs = append(errs, desc.String())
 			var pos SchemaErrorPosition
-			if posMap != nil {
-				if sp, ok := posMap[desc.Context().String()]; ok {
+			if lookup != nil {
+				if sp, ok := lookup(desc.Context()); ok {
 					pos = SchemaErrorPosition(sp)
 				}
 			}
