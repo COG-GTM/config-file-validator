@@ -1,0 +1,60 @@
+# Every document in a multi-document YAML file is validated
+
+# Valid multi-document file passes
+exec validator valid.yaml
+stdout '✓'
+
+# Malformed second document fails syntax validation
+! exec validator bad_syntax.yaml
+stdout '×'
+stdout 'error:'
+
+# Second document violating the modeline schema fails
+! exec validator bad_schema.yaml
+stdout '×'
+stdout 'document 2: privileged'
+
+# Second document violating a --schema-map schema fails
+! exec validator --schema-map=mapped.yaml:schema.json mapped.yaml
+stdout '×'
+stdout 'document 2: privileged'
+
+# Valid multi-document file passes --schema-map
+exec validator --schema-map=valid_mapped.yaml:schema.json valid_mapped.yaml
+stdout '✓'
+
+-- schema.json --
+{
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": { "type": "string" },
+    "privileged": { "const": false }
+  },
+  "additionalProperties": false
+}
+-- valid.yaml --
+name: first
+---
+name: second
+-- bad_syntax.yaml --
+name: first
+---
+name: second: broken:::
+-- bad_schema.yaml --
+# yaml-language-server: $schema=schema.json
+name: first
+privileged: false
+---
+name: second
+privileged: true
+-- mapped.yaml --
+name: first
+---
+name: second
+privileged: true
+-- valid_mapped.yaml --
+name: first
+---
+name: second
+privileged: false

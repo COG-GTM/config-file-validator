@@ -348,8 +348,9 @@ func validateWithExternal(v validator.Validator, content []byte, schemaPath stri
 		return valid, false, err
 	}
 
-	jm, ok := v.(validator.JSONMarshaler)
-	if !ok {
+	_, isMulti := v.(validator.MultiDocumentJSONMarshaler)
+	_, isSingle := v.(validator.JSONMarshaler)
+	if !isMulti && !isSingle {
 		return true, true, nil
 	}
 
@@ -358,13 +359,24 @@ func validateWithExternal(v validator.Validator, content []byte, schemaPath stri
 		return false, false, err
 	}
 
-	docJSON, err := jm.MarshalToJSON(content)
+	docs, err := marshalJSONDocuments(v, content)
 	if err != nil {
 		return false, false, err
 	}
 
-	valid, err = validator.JSONSchemaValidate(schemaURL, docJSON)
+	valid, err = validator.JSONSchemaValidateDocuments(schemaURL, docs, nil)
 	return valid, false, err
+}
+
+func marshalJSONDocuments(v validator.Validator, content []byte) ([][]byte, error) {
+	if mm, ok := v.(validator.MultiDocumentJSONMarshaler); ok {
+		return mm.MarshalDocumentsToJSON(content)
+	}
+	docJSON, err := v.(validator.JSONMarshaler).MarshalToJSON(content)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{docJSON}, nil
 }
 
 func schemaMapUnsupportedWarning(schemaPath string) string {

@@ -336,6 +336,29 @@ func Test_CLISchemaMapValid(t *testing.T) {
 	require.Equal(t, 0, exitStatus)
 }
 
+func Test_CLISchemaMapYAMLSecondDocumentInvalid(t *testing.T) {
+	dir := t.TempDir()
+	testhelper.WriteFile(t, dir, "deploy.yaml", "name: first\n---\nname: second\nprivileged: true\n")
+	schema := testhelper.WriteFile(t, dir, "schema.json", `{
+		"type": "object",
+		"properties": {
+			"name": {"type": "string"},
+			"privileged": {"const": false}
+		}
+	}`)
+
+	fsFinder := finder.FileSystemFinderInit(
+		finder.WithPathRoots(dir + "/deploy.yaml"),
+	)
+	cli := Init(
+		WithFinder(fsFinder),
+		WithSchemaMap(map[string]string{"deploy.yaml": schema}),
+	)
+	exitStatus, err := cli.Run()
+	require.NoError(t, err)
+	require.Equal(t, 1, exitStatus)
+}
+
 func Test_toSchemaURLLocalPath(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "schemas #1")

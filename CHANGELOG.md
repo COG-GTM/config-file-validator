@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- YAML files with multiple documents (separated by `---`) now have every document checked for syntax and schema, including `--schema-map` and SchemaStore schemas; previously only the first document was validated. `YAMLValidator.MarshalToJSON` returns `ErrMultipleYAMLDocuments` for multi-document input, and the new `MarshalDocumentsToJSON` returns one JSON document per YAML document.
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).

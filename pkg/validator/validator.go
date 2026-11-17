@@ -68,6 +68,14 @@ type JSONMarshaler interface {
 	MarshalToJSON(b []byte) ([]byte, error)
 }
 
+// MultiDocumentJSONMarshaler is an optional interface for validators whose
+// files can hold several documents (e.g. YAML streams separated by "---").
+// When implemented, external schemas are applied to every returned document
+// instead of the single document from JSONMarshaler.
+type MultiDocumentJSONMarshaler interface {
+	MarshalDocumentsToJSON(b []byte) ([][]byte, error)
+}
+
 // XMLSchemaValidator is a marker interface for validators that use XSD
 // schema validation instead of JSON Schema. When an external schema is
 // applied via --schema-map or --schemastore, the CLI uses ValidateXSD
