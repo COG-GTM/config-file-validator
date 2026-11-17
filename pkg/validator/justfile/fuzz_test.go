@@ -41,6 +41,9 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("v := \"a\" + \"b\" / \"c\"\n"))
 	f.Add([]byte("v := / \"absolute\"\n"))
 	f.Add([]byte("build:\n    echo '{{{{literal}}'\n"))
+	for _, input := range deepNestingInputs() {
+		f.Add(input)
+	}
 
 	f.Fuzz(func(_ *testing.T, data []byte) {
 		jf, err := Parse(data)
