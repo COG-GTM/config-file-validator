@@ -1,0 +1,25 @@
+# HOCON include directives are rejected without opening the target file
+! exec validator include.hocon
+stdout '×'
+stdout 'include directives are not supported'
+
+# Substitutions are not resolved from the environment
+env CFV_HOCON_SECRET=value
+! exec validator env.hocon
+stdout 'could not resolve substitution'
+
+# Regular HOCON still validates
+exec validator good.hocon
+stdout '✓'
+
+-- include.hocon --
+include required(file("secret.conf"))
+-- secret.conf --
+leaked = true
+-- env.hocon --
+a = ${CFV_HOCON_SECRET}
+-- good.hocon --
+# include "secret.conf"
+b = 2
+a = ${b}
+c = ${?CFV_HOCON_SECRET}
