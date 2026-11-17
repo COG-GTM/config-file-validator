@@ -1,0 +1,25 @@
+# Report writer must not follow a symbolic link at the output path
+[!symlink] skip 'symlinks not supported'
+
+symlink results.xml -> victim.txt
+! exec validator --reporter=junit:results.xml good.json
+stdout 'symbolic link'
+cmp victim.txt victim.orig
+
+# Default file name inside an output directory is also protected
+mkdir out
+symlink out/result.xml -> ../victim.txt
+! exec validator --reporter=junit:out good.json
+stdout 'symbolic link'
+cmp victim.txt victim.orig
+
+# Regular file path still works
+exec validator --reporter=junit:plain.xml good.json
+grep '<testsuites' plain.xml
+
+-- good.json --
+{"key": "value"}
+-- victim.txt --
+do not overwrite
+-- victim.orig --
+do not overwrite
