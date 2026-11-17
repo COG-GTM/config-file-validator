@@ -1126,6 +1126,10 @@ func applyValidatorOptions(opts *configfile.ValidatorOptions) []filetype.FileTyp
 			if opts.INI != nil {
 				types[i].Validator = applyINIOptions(opts.INI)
 			}
+		case "xml":
+			if opts.XML != nil {
+				types[i].Validator = applyXMLOptions(opts.XML)
+			}
 		default:
 		}
 	}
@@ -1162,6 +1166,14 @@ func applyINIOptions(opts *configfile.INIOptions) validator.IniValidator {
 	v := validator.IniValidator{}
 	if opts.ForbidDuplicateKeys != nil {
 		v.ForbidDuplicateKeys = *opts.ForbidDuplicateKeys
+	}
+	return v
+}
+
+func applyXMLOptions(opts *configfile.XMLOptions) validator.XMLValidator {
+	v := validator.XMLValidator{}
+	if opts.ValidateDTD != nil {
+		v.SkipDTD = !*opts.ValidateDTD
 	}
 	return v
 }

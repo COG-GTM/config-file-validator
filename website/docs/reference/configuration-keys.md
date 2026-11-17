@@ -34,12 +34,13 @@ All keys supported in `.cfv.toml`. See the [Configuration File](../guides/config
 
 ## Validator options
 
-| Key                                     | Type    | Default | Description                                              |
-|-----------------------------------------|---------|---------|----------------------------------------------------------|
-| `validators.csv.delimiter`              | string  | `","`   | Field delimiter. Use `"\t"` for tab.                     |
-| `validators.csv.comment`                | string  | —       | Lines starting with this character are skipped.          |
-| `validators.csv.lazy-quotes`            | boolean | `false` | Allow bare quotes in unquoted fields.                    |
-| `validators.json.forbid-duplicate-keys` | boolean | `false` | Report duplicate keys in objects as errors.              |
-| `validators.ini.forbid-duplicate-keys`  | boolean | `false` | Report duplicate keys within the same section as errors. |
+| Key                                     | Type    | Default | Description                                                               |
+|-----------------------------------------|---------|---------|---------------------------------------------------------------------------|
+| `validators.csv.delimiter`              | string  | `","`   | Field delimiter. Use `"\t"` for tab.                                      |
+| `validators.csv.comment`                | string  | —       | Lines starting with this character are skipped.                           |
+| `validators.csv.lazy-quotes`            | boolean | `false` | Allow bare quotes in unquoted fields.                                     |
+| `validators.json.forbid-duplicate-keys` | boolean | `false` | Report duplicate keys in objects as errors.                               |
+| `validators.ini.forbid-duplicate-keys`  | boolean | `false` | Report duplicate keys within the same section as errors.                  |
+| `validators.xml.validate-dtd`           | boolean | `true`  | Validate XML against its inline DTD; `false` checks well-formedness only. |
 
 YAML duplicate keys are always rejected by the parser regardless of configuration.
