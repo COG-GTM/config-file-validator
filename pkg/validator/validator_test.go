@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1235,4 +1236,63 @@ func Test_JustfileValidateValid(t *testing.T) {
 	valid, err := JustfileValidator{}.ValidateSyntax([]byte("# comment\ndefault:\n    echo hello\n"))
 	require.True(t, valid)
 	require.NoError(t, err)
+}
+
+func Test_HclDeepNestingRejected(t *testing.T) {
+	deep := func(open, closer string, n int) []byte {
+		return []byte("a = " + strings.Repeat(open, n) + strings.Repeat(closer, n) + "\n")
+	}
+	tests := []struct {
+		name  string
+		input []byte
+		valid bool
+	}{
+		{"5MOpenBrackets", []byte("a = " + strings.Repeat("[", 5_000_000)), false},
+		{"5MOpenParens", []byte("a = " + strings.Repeat("(", 5_000_000)), false},
+		{"5MOpenBraces", []byte("a = " + strings.Repeat("{", 5_000_000)), false},
+		{"bracketsAtLimit", deep("[", "]", maxHclNestingDepth), true},
+		{"bracketsOverLimit", deep("[", "]", maxHclNestingDepth+1), false},
+		{"interpolationsOverLimit", deep(`"${`, `}"`, maxHclNestingDepth), false},
+		{"directivesOverLimit", []byte("a = \"" + strings.Repeat("%{if true}", maxHclNestingDepth) + strings.Repeat("%{endif}", maxHclNestingDepth) + "\"\n"), false},
+		{"stringClosersDoNotHideDepth", []byte("a = " + strings.Repeat(`["]",`, 5_000_000)), false},
+		{"commentClosersDoNotHideDepth", []byte("a = " + strings.Repeat("[ # ]\n", maxHclNestingDepth+1)), false},
+		{"unterminatedBlockCommentDoesNotHideDepth", []byte("a = /* " + strings.Repeat("[", 5_000_000)), false},
+		{"quotedNewlineDoesNotHideDepth", []byte("a = \"x\n\" " + strings.Repeat("[", 5_000_000)), false},
+		{"interpolationBracketDoesNotHideDepth", []byte(`a = "${ [ }" ` + strings.Repeat("[", 5_000_000)), false},
+		{"heredocMarkerWithTrailingSpace", []byte("a = <<EOT\nx\nEOT  \nb = " + strings.Repeat("[", 5_000_000)), false},
+		{"directiveWithCommentOverLimit", []byte(`a = "` + strings.Repeat("%{ /* c */ if true }", maxHclNestingDepth)), false},
+		{"bracketsInStringIgnored", []byte(`a = "` + strings.Repeat("[", 5000) + `"` + "\n"), true},
+		{"bracketsInCommentIgnored", []byte("# " + strings.Repeat("[", 5000) + "\n/* " + strings.Repeat("{", 5000) + " */\na = 1\n"), true},
+		{"bracketsInHeredocIgnored", []byte("a = <<-EOT\n" + strings.Repeat("[", 5000) + "\n  EOT\n"), true},
+		{"escapedInterpolationIgnored", []byte(`a = "` + strings.Repeat("$${", 5000) + `"` + "\n"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, err := HclValidator{}.ValidateSyntax(tt.input)
+			require.Equal(t, tt.valid, valid, "error: %v", err)
+			if !tt.valid {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func Test_HclNestingErrorPosition(t *testing.T) {
+	input := []byte("b = 1\na = " + strings.Repeat("[", maxHclNestingDepth+1))
+	_, err := HclValidator{}.ValidateSyntax(input)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	require.Contains(t, ve.Error(), "nesting depth exceeds the maximum of 1000")
+	require.Equal(t, 2, ve.Line)
+	require.Equal(t, len("a = ")+maxHclNestingDepth+1, ve.Column)
+}
+
+func Test_HclFileTooLarge(t *testing.T) {
+	input := make([]byte, maxHclFileSize+1)
+	for i := range input {
+		input[i] = '\n'
+	}
+	valid, err := HclValidator{}.ValidateSyntax(input)
+	require.False(t, valid)
+	require.ErrorContains(t, err, "exceeds the 16777216 byte limit")
 }

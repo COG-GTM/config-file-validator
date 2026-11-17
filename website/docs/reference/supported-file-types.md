@@ -38,3 +38,7 @@
 ## Known files
 
 Many files are recognized by filename regardless of extension. See [Known Files](./known-files.md).
+
+## Input limits
+
+- HCL files larger than 16 MiB, or whose brackets, template interpolations, or template directives nest more than 1000 levels deep, are reported as invalid without being parsed. This keeps hostile input from exhausting the parser's stack.
