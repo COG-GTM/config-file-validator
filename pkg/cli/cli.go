@@ -285,24 +285,36 @@ func (c *CLI) validateSchema(v validator.Validator, content []byte, filePath str
 	}
 
 	sv, hasSV := v.(validator.SchemaValidator)
+	var declaredValid, declared bool
+	var declaredErr error
 	if hasSV {
-		valid, err := sv.ValidateSchema(content, filePath)
-		if !errors.Is(err, validator.ErrNoSchema) {
-			return valid, nil, err
-		}
+		declaredValid, declaredErr = sv.ValidateSchema(content, filePath)
+		declared = !errors.Is(declaredErr, validator.ErrNoSchema)
 	}
 
+	// A --schema-map match is enforced even when the document declares its
+	// own schema, so a scanned file cannot opt out of the operator's schema.
 	if schemaPath, ok := c.lookupSchemaMap(filePath); ok {
 		valid, skipped, err := validateWithExternal(v, content, schemaPath)
-		if skipped {
-			if c.requireSchema {
-				return false, nil, &validator.SchemaErrors{
-					Items: []string{schemaMapUnsupportedError(schemaPath)},
-				}
+		switch {
+		case skipped && declared:
+			return declaredValid, nil, declaredErr
+		case skipped && c.requireSchema:
+			return false, nil, &validator.SchemaErrors{
+				Items: []string{schemaMapUnsupportedError(schemaPath)},
 			}
+		case skipped:
 			return valid, []string{schemaMapUnsupportedWarning(schemaPath)}, nil
+		case err != nil || !valid:
+			return valid, nil, err
+		case declared:
+			return declaredValid, nil, declaredErr
 		}
-		return valid, nil, err
+		return true, nil, nil
+	}
+
+	if declared {
+		return declaredValid, nil, declaredErr
 	}
 
 	if c.schemaStore != nil {

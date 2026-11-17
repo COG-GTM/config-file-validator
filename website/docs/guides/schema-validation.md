@@ -167,13 +167,13 @@ The same mappings can be set in `.cfv.toml`:
 
 ## Priority order
 
-When multiple schema sources are available for a file, the validator uses this precedence (highest first):
+When multiple schema sources are available for a file, the validator applies them as follows:
 
-1. Schema declared in the document (`$schema`, `yaml-language-server`, `xsi:noNamespaceSchemaLocation`)
-2. `--schema-map` patterns
-3. `--schemastore` catalog lookup
+1. `--schema-map` patterns are always enforced. If the document also declares a schema, the file must pass both.
+2. Schema declared in the document (`$schema`, `yaml-language-server`, `xsi:noNamespaceSchemaLocation`)
+3. `--schemastore` catalog lookup, only when the document declares no schema and no `--schema-map` pattern matches
 
-Document-level declarations always take priority. SchemaStore acts as a fallback for files that don't declare their own schema.
+A scanned file cannot replace a schema that you set with `--schema-map`. SchemaStore acts as a fallback for files that don't declare their own schema, so use `--schema-map` in CI when a file's author must not be able to choose its schema.
 
 ## Requiring schemas
 
