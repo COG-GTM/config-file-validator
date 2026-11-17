@@ -79,6 +79,8 @@ Add an `xsi:noNamespaceSchemaLocation` attribute on the root element:
 
 XML uses XSD (XML Schema Definition) files rather than JSON Schema.
 
+The schema location must be a relative path to a `.xsd` file. It is resolved against the working directory and then against the XML file's directory, and after symlinks are resolved it must stay inside one of those two directories. Absolute paths, URLs, files without a `.xsd` extension, non-regular files and schemas larger than 10 MiB are rejected. To validate against a schema stored elsewhere, use `--schema-map`.
+
 XML files with inline DTD declarations (`<!DOCTYPE>`) are validated against the DTD during syntax checking — no separate schema declaration needed.
 
 ### SARIF
