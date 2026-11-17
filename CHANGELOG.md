@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--merge-sarif` and `--merge-sarif-dir` now reject symbolic links and special files in the merge directory, non-regular files and files larger than 64 MiB, directory trees deeper than 32 levels or with more than 1000 SARIF files, SARIF versions other than `2.1.0`, and runs without a `tool.driver.name`, so a planted `.sarif` link to `/dev/zero` can no longer hang the run or exhaust memory
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).

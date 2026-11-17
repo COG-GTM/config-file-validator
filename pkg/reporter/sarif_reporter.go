@@ -2,7 +2,9 @@ package reporter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +17,13 @@ const SARIFSchema = "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/
 const DriverName = "config-file-validator"
 const DriverInfoURI = "https://github.com/Boeing/config-file-validator"
 const DriverVersion = "1.8.0"
+
+// Limits applied to external SARIF inputs read by --merge-sarif and --merge-sarif-dir.
+const (
+	maxSARIFMergeFileSize = 64 << 20
+	maxSARIFMergeFiles    = 1000
+	maxSARIFMergeDirDepth = 32
+)
 
 type SARIFReporter struct {
 	outputDest  string
@@ -82,6 +91,15 @@ type externalSARIFLog struct {
 	Schema  string            `json:"$schema"`
 	Version string            `json:"version"`
 	Runs    []json.RawMessage `json:"runs"`
+}
+
+type externalSARIFRun struct {
+	Tool struct {
+		Driver struct {
+			Name string `json:"name"`
+		} `json:"driver"`
+	} `json:"tool"`
+	Results []map[string]json.RawMessage `json:"results"`
 }
 
 func (r runs) MarshalJSON() ([]byte, error) {
@@ -218,17 +236,28 @@ func loadMergedSARIFRuns(config SARIFMergeConfig) ([]runs, error) {
 }
 
 func sarifFilesInDirectory(dir string) ([]string, error) {
+	root := filepath.Clean(dir)
 	paths := []string{}
-	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
+			if sarifMergeDirDepth(root, path) > maxSARIFMergeDirDepth {
+				return fmt.Errorf("directory %q exceeds the maximum depth of %d", path, maxSARIFMergeDirDepth)
+			}
 			return nil
 		}
-		if isSARIFFile(path) {
-			paths = append(paths, path)
+		if !isSARIFFile(path) {
+			return nil
 		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("%q is not a regular file; symbolic links and special files are not merged", path)
+		}
+		if len(paths) >= maxSARIFMergeFiles {
+			return fmt.Errorf("more than %d SARIF files found", maxSARIFMergeFiles)
+		}
+		paths = append(paths, path)
 		return nil
 	})
 	if err != nil {
@@ -239,13 +268,66 @@ func sarifFilesInDirectory(dir string) ([]string, error) {
 	return paths, nil
 }
 
+func sarifMergeDirDepth(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
+}
+
 func isSARIFFile(path string) bool {
 	name := strings.ToLower(filepath.Base(path))
 	return strings.HasSuffix(name, ".sarif") || strings.HasSuffix(name, ".sarif.json")
 }
 
+func readSARIFMergeFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSARIFMergeFileInfo(info); err != nil {
+		return nil, err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err = f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSARIFMergeFileInfo(info); err != nil {
+		return nil, err
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxSARIFMergeFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxSARIFMergeFileSize {
+		return nil, errSARIFMergeFileTooLarge
+	}
+	return data, nil
+}
+
+var errSARIFMergeFileTooLarge = fmt.Errorf("file exceeds the maximum size of %d bytes", maxSARIFMergeFileSize)
+
+func checkSARIFMergeFileInfo(info fs.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return errors.New("not a regular file")
+	}
+	if info.Size() > maxSARIFMergeFileSize {
+		return errSARIFMergeFileTooLarge
+	}
+	return nil
+}
+
 func loadSARIFRuns(path string) ([]runs, error) {
-	data, err := os.ReadFile(path)
+	data, err := readSARIFMergeFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading SARIF merge file %q: %w", path, err)
 	}
@@ -254,28 +336,37 @@ func loadSARIFRuns(path string) ([]runs, error) {
 	if err := json.Unmarshal(data, &log); err != nil {
 		return nil, fmt.Errorf("parsing SARIF merge file %q: %w", path, err)
 	}
-	if !isSupportedSARIFVersion(log.Version, log.Schema) {
-		return nil, fmt.Errorf("parsing SARIF merge file %q: unsupported SARIF version %q", path, log.Version)
+	if strings.TrimSpace(log.Version) != SARIFVersion {
+		return nil, fmt.Errorf("parsing SARIF merge file %q: unsupported SARIF version %q (expected %q)", path, log.Version, SARIFVersion)
 	}
 	if len(log.Runs) == 0 {
 		return nil, fmt.Errorf("parsing SARIF merge file %q: no runs found", path)
 	}
 
 	mergedRuns := make([]runs, 0, len(log.Runs))
-	for _, run := range log.Runs {
+	for i, run := range log.Runs {
+		if err := validateExternalSARIFRun(run); err != nil {
+			return nil, fmt.Errorf("parsing SARIF merge file %q: run %d: %w", path, i, err)
+		}
 		mergedRuns = append(mergedRuns, runs{raw: run})
 	}
 	return mergedRuns, nil
 }
 
-func isSupportedSARIFVersion(version, schema string) bool {
-	version = strings.TrimSpace(version)
-	if version != "" {
-		return version == "2.1" || strings.HasPrefix(version, "2.1.")
+func validateExternalSARIFRun(raw json.RawMessage) error {
+	var run externalSARIFRun
+	if err := json.Unmarshal(raw, &run); err != nil {
+		return err
 	}
-
-	schema = strings.ToLower(strings.TrimSpace(schema))
-	return strings.Contains(schema, "/sarif/") && strings.Contains(schema, "2.1")
+	if run.Tool.Driver.Name == "" {
+		return errors.New("tool.driver.name is required")
+	}
+	for i, res := range run.Results {
+		if res == nil {
+			return fmt.Errorf("result %d is not an object", i)
+		}
+	}
+	return nil
 }
 
 func (sr SARIFReporter) Print(reports []Report) error {

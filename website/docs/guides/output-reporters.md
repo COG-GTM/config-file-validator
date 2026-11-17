@@ -127,6 +127,12 @@ To merge every SARIF file in a directory tree:
 validator --reporter=sarif:results.sarif --merge-sarif-dir=reports .
 ```
 
+Merged SARIF files are trusted input. Their runs, including tool names and results, are copied into the report as-is after basic structural checks, so only merge files produced by your own pipeline and keep the merge directory out of paths that untrusted contributors can write to. The validator enforces these limits and fails the run when one is exceeded:
+
+- Each file must declare `"version": "2.1.0"`, and every run must be a JSON object with a non-empty `tool.driver.name` and a `results` array of objects (when present).
+- Each file must be a regular file of at most 64 MiB. In `--merge-sarif-dir`, a `.sarif` or `.sarif.json` entry that is a symbolic link, FIFO, or device is rejected without being read.
+- `--merge-sarif-dir` walks at most 32 directory levels below the root and accepts at most 1000 SARIF files.
+
 Example GitHub Actions step:
 
 ```yaml
