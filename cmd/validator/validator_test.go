@@ -249,3 +249,53 @@ func Test_emptyBoolEnvVarNoParseError(t *testing.T) {
 		})
 	}
 }
+
+func Test_applyConfigFileRejectsReporterOutsideConfigDir(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	require.NoError(t, os.Mkdir(project, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(project, ".cfv.toml"), []byte(`reporter = ["standard:../outside.txt"]`), 0o600))
+	t.Chdir(project)
+
+	cfg, err := getFlags([]string{"."})
+	require.NoError(t, err)
+
+	_, err = applyConfigFile(&cfg)
+	require.ErrorContains(t, err, "resolves outside the config file directory")
+
+	_, statErr := os.Stat(filepath.Join(root, "outside.txt"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+func Test_validateConfigFileReporterOutputs(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	require.NoError(t, os.MkdirAll(filepath.Join(project, "reports"), 0o700))
+	cfgPath := filepath.Join(project, ".cfv.toml")
+	t.Chdir(project)
+
+	cases := []struct {
+		name    string
+		conf    []reporterConfig
+		wantErr string
+	}{
+		{"stdout only", []reporterConfig{{reportType: "standard"}}, ""},
+		{"file in project", []reporterConfig{{reportType: "json", outputDest: "report.json"}}, ""},
+		{"existing subdirectory", []reporterConfig{{reportType: "sarif", outputDest: "reports"}}, ""},
+		{"new file in subdirectory", []reporterConfig{{reportType: "junit", outputDest: "reports/junit.xml"}}, ""},
+		{"parent traversal", []reporterConfig{{reportType: "standard", outputDest: "../outside.txt"}}, "resolves outside"},
+		{"nested traversal", []reporterConfig{{reportType: "standard", outputDest: "reports/../../outside.txt"}}, "resolves outside"},
+		{"absolute path", []reporterConfig{{reportType: "standard", outputDest: filepath.Join(root, "outside.txt")}}, "must be relative"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConfigFileReporterOutputs(tc.conf, cfgPath)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+		})
+	}
+}
