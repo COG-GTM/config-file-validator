@@ -579,18 +579,22 @@ func Test_ToonMarshalToJSONInvalid(t *testing.T) {
 	require.Error(t, err)
 }
 
-// --- resolveSchemaURL tests ---
+// --- schemaLocator.resolve tests ---
 
 func Test_resolveSchemaURLHTTPS(t *testing.T) {
 	t.Parallel()
-	got := resolveSchemaURL("https://example.com/schema.json", "/some/file.json")
+	l := newSchemaLocator(SchemaPolicy{}, "/some/file.json")
+	got, err := l.resolve("https://example.com/schema.json", "/some/file.json")
+	require.NoError(t, err)
 	require.Equal(t, "https://example.com/schema.json", got)
 }
 
 func Test_resolveSchemaURLAbsPath(t *testing.T) {
 	t.Parallel()
-	schema := filepath.Join(t.TempDir(), "schema.json")
-	got := resolveSchemaURL(schema, filepath.Join(filepath.Dir(schema), "config.json"))
+	schema := writeTestSchema(t)
+	filePath := filepath.Join(filepath.Dir(schema), "config.json")
+	got, err := newSchemaLocator(SchemaPolicy{}, filePath).resolve(schema, filePath)
+	require.NoError(t, err)
 	require.Equal(t, tools.FileURL(schema), got)
 }
 
@@ -598,7 +602,10 @@ func Test_resolveSchemaURLRelative(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "config", "file.json")
-	got := resolveSchemaURL("schema.json", filePath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(filePath), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config", "schema.json"), []byte(`{}`), 0o600))
+	got, err := newSchemaLocator(SchemaPolicy{}, filePath).resolve("schema.json", filePath)
+	require.NoError(t, err)
 	require.Equal(t, tools.FileURL(filepath.Join(dir, "config", "schema.json")), got)
 }
 

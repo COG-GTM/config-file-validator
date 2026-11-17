@@ -13,7 +13,10 @@ type JSONValidator struct {
 	ForbidDuplicateKeys bool
 }
 
-var _ Validator = JSONValidator{}
+var (
+	_ Validator             = JSONValidator{}
+	_ PolicySchemaValidator = JSONValidator{}
+)
 
 func (v JSONValidator) ValidateSyntax(b []byte) (bool, error) {
 	var output any
@@ -54,7 +57,13 @@ func (JSONValidator) MarshalToJSON(b []byte) ([]byte, error) {
 	return b, nil
 }
 
-func (JSONValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+func (v JSONValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	return v.ValidateSchemaWithPolicy(b, filePath, SchemaPolicy{})
+}
+
+// ValidateSchemaWithPolicy is ValidateSchema with the schema locations the
+// file may declare restricted by policy.
+func (JSONValidator) ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error) {
 	var raw any
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return false, err
@@ -78,8 +87,6 @@ func (JSONValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return false, errors.New("$schema must not be empty")
 	}
 
-	schemaURL = resolveSchemaURL(schemaURL, filePath)
-
 	delete(doc, "$schema")
 	cleanDoc, err := json.Marshal(doc)
 	if err != nil {
@@ -87,7 +94,7 @@ func (JSONValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 	}
 
 	posMap := buildJSONPositionMap(b)
-	return JSONSchemaValidateWithPositions(schemaURL, cleanDoc, posMap)
+	return validateDeclaredSchema(schemaURL, filePath, policy, cleanDoc, posMap)
 }
 
 // checkJSONDuplicateKeys walks the JSON token stream and reports duplicate keys.

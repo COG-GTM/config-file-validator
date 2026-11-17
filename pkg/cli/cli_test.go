@@ -898,3 +898,31 @@ func Test_CLIStdinWithQuiet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, exitStatus)
 }
+
+func Test_CLISchemaRootsRestrictDeclaredSchema(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	testhelper.WriteFile(t, testhelper.CreateSubdir(t, base, "schemas"), "s.json", `{"type":"object","properties":{"port":{"type":"integer"}}}`)
+	repo := testhelper.CreateSubdir(t, base, "repo")
+	testhelper.WriteFile(t, repo, "c.json", `{"$schema":"../schemas/s.json","port":1}`)
+
+	run := func(roots ...string) (int, []reporter.Report) {
+		capture := &captureReporter{}
+		c := Init(
+			WithFinder(finder.FileSystemFinderInit(finder.WithPathRoots(repo))),
+			WithReporters(capture),
+			WithSchemaRoots(roots...),
+		)
+		status, err := c.Run()
+		require.NoError(t, err)
+		return status, capture.reports
+	}
+
+	status, reports := run(repo)
+	require.Equal(t, 1, status)
+	require.Len(t, reports, 1)
+	require.ErrorIs(t, reports[0].ValidationError, validator.ErrSchemaLocationNotAllowed)
+
+	status, _ = run(base)
+	require.Equal(t, 0, status)
+}

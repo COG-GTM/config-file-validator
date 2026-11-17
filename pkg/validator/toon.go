@@ -14,7 +14,10 @@ var toonLineRe = regexp.MustCompile(`line (\d+): (.*)`)
 
 type ToonValidator struct{}
 
-var _ Validator = ToonValidator{}
+var (
+	_ Validator             = ToonValidator{}
+	_ PolicySchemaValidator = ToonValidator{}
+)
 
 func (ToonValidator) ValidateSyntax(b []byte) (bool, error) {
 	_, err := toon.Decode(b)
@@ -41,7 +44,13 @@ func (ToonValidator) MarshalToJSON(b []byte) ([]byte, error) {
 	return json.Marshal(raw)
 }
 
-func (ToonValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+func (v ToonValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	return v.ValidateSchemaWithPolicy(b, filePath, SchemaPolicy{})
+}
+
+// ValidateSchemaWithPolicy is ValidateSchema with the schema locations the
+// file may declare restricted by policy.
+func (ToonValidator) ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error) {
 	raw, err := toon.Decode(b)
 	if err != nil {
 		return false, err
@@ -71,5 +80,5 @@ func (ToonValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return false, err
 	}
 
-	return JSONSchemaValidate(resolveSchemaURL(schemaURL, filePath), docJSON)
+	return validateDeclaredSchema(schemaURL, filePath, policy, docJSON, nil)
 }

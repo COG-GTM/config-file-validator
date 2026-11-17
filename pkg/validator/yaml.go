@@ -17,7 +17,10 @@ import (
 // Note: yaml.v3 already rejects duplicate keys by default.
 type YAMLValidator struct{}
 
-var _ Validator = YAMLValidator{}
+var (
+	_ Validator             = YAMLValidator{}
+	_ PolicySchemaValidator = YAMLValidator{}
+)
 
 var yamlLineRe = regexp.MustCompile(`yaml: line (\d+): (.*)`)
 
@@ -44,7 +47,13 @@ func (YAMLValidator) MarshalToJSON(b []byte) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-func (YAMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+func (v YAMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	return v.ValidateSchemaWithPolicy(b, filePath, SchemaPolicy{})
+}
+
+// ValidateSchemaWithPolicy is ValidateSchema with the schema locations the
+// file may declare restricted by policy.
+func (YAMLValidator) ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error) {
 	schemaURL := extractYAMLSchemaComment(b)
 	if schemaURL == "" {
 		return true, ErrNoSchema
@@ -61,7 +70,7 @@ func (YAMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 	}
 
 	posMap := buildYAMLPositionMap(b)
-	return JSONSchemaValidateWithPositions(resolveSchemaURL(schemaURL, filePath), docJSON, posMap)
+	return validateDeclaredSchema(schemaURL, filePath, policy, docJSON, posMap)
 }
 
 // extractYAMLSchemaComment scans for the yaml-language-server schema modeline:

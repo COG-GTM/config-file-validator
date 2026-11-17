@@ -2,12 +2,8 @@ package validator
 
 import (
 	"fmt"
-	"net/url"
-	"path/filepath"
 
 	"github.com/xeipuuv/gojsonschema"
-
-	"github.com/Boeing/config-file-validator/v2/pkg/tools"
 )
 
 // SourcePosition holds a 1-based line and column in the original source file.
@@ -28,7 +24,10 @@ func JSONSchemaValidateWithPositions(schemaURL string, docJSON []byte, posMap ma
 }
 
 func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
-	schemaLoader := gojsonschema.NewReferenceLoader(schemaURL)
+	return validateWithLoader(gojsonschema.NewReferenceLoader(schemaURL), docJSON, posMap)
+}
+
+func validateWithLoader(schemaLoader gojsonschema.JSONLoader, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
 	documentLoader := gojsonschema.NewBytesLoader(docJSON)
 
 	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
@@ -53,22 +52,4 @@ func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]Sour
 	}
 
 	return true, nil
-}
-
-func resolveSchemaURL(schemaURL, filePath string) string {
-	if filepath.IsAbs(schemaURL) {
-		return tools.FileURL(schemaURL)
-	}
-
-	parsed, err := url.Parse(schemaURL)
-	if err == nil && parsed.Scheme != "" {
-		return schemaURL
-	}
-
-	dir := filepath.Dir(filePath)
-	absSchema, err := filepath.Abs(filepath.Join(dir, schemaURL))
-	if err != nil {
-		return schemaURL
-	}
-	return tools.FileURL(absSchema)
 }

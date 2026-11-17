@@ -807,6 +807,18 @@ func buildCLI(rc *resolvedConfig) *cli.CLI {
 	return buildCLIWithFinder(rc, nil)
 }
 
+// schemaRoots returns the locations that file-declared local schemas may be
+// loaded from: the working directory plus each search path.
+func schemaRoots(searchPaths []string) []string {
+	roots := []string{"."}
+	for _, p := range searchPaths {
+		if p != "-" {
+			roots = append(roots, p)
+		}
+	}
+	return roots
+}
+
 func buildCLIWithFinder(rc *resolvedConfig, fileFinder finder.FileFinder) *cli.CLI {
 	opts := []cli.Option{
 		cli.WithReporters(rc.reporters...),
@@ -816,6 +828,7 @@ func buildCLIWithFinder(rc *resolvedConfig, fileFinder finder.FileFinder) *cli.C
 		cli.WithNoSchema(rc.noSchema),
 		cli.WithSchemaMap(rc.schemaMap),
 		cli.WithSchemaStore(rc.store),
+		cli.WithSchemaRoots(schemaRoots(rc.searchPaths)...),
 	}
 
 	if rc.isStdin {
