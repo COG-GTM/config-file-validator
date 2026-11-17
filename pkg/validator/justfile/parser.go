@@ -10,7 +10,14 @@ type parser struct {
 	pos         int
 	file        string
 	lastComment string // most recent comment, cleared on non-comment/newline tokens
+	exprDepth   int    // current expression nesting depth, bounded by maxExpressionDepth
 }
+
+// maxExpressionDepth bounds the depth of expression trees built by the
+// parser, including left-deep || and && chains built iteratively, so that
+// hostile input cannot produce trees deep enough to exhaust the stack in
+// later recursive passes.
+const maxExpressionDepth = 1000
 
 func newParser(tokens []token, file string) *parser {
 	return &parser{tokens: tokens, file: file}
@@ -700,7 +707,25 @@ func (p *parser) parseAttributeArg() (AttributeArg, error) {
 
 // Expression parsing
 
+// enterExpr records one more level of expression nesting and fails once
+// maxExpressionDepth is exceeded. Callers must undo it with leaveExpr.
+func (p *parser) enterExpr() error {
+	p.exprDepth++
+	if p.exprDepth > maxExpressionDepth {
+		return p.errorf("expression is nested too deeply (maximum depth is %d)", maxExpressionDepth)
+	}
+	return nil
+}
+
+func (p *parser) leaveExpr(levels int) {
+	p.exprDepth -= levels
+}
+
 func (p *parser) parseExpression() (Expression, error) {
+	defer p.leaveExpr(1)
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
 	// Expressions can start with / for absolute paths
 	if p.check(tokenSlash) {
 		pos := p.current().Pos
@@ -724,7 +749,13 @@ func (p *parser) parseLogicalOr() (Expression, error) {
 		return nil, err
 	}
 
+	levels := 0
+	defer func() { p.leaveExpr(levels) }()
 	for p.check(tokenOr) {
+		levels++
+		if err := p.enterExpr(); err != nil {
+			return nil, err
+		}
 		pos := p.current().Pos
 		p.advance()
 		right, err := p.parseLogicalAnd()
@@ -742,7 +773,13 @@ func (p *parser) parseLogicalAnd() (Expression, error) {
 		return nil, err
 	}
 
+	levels := 0
+	defer func() { p.leaveExpr(levels) }()
 	for p.check(tokenAnd) {
+		levels++
+		if err := p.enterExpr(); err != nil {
+			return nil, err
+		}
 		pos := p.current().Pos
 		p.advance()
 		right, err := p.parseComparison()
@@ -776,6 +813,10 @@ func (p *parser) parseComparison() (Expression, error) {
 // parsePathJoin parses / expressions. In just, + binds tighter than /,
 // and / is right-associative: a / b / c = a / (b / c).
 func (p *parser) parsePathJoin() (Expression, error) {
+	defer p.leaveExpr(1)
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
 	left, err := p.parseConcatenation()
 	if err != nil {
 		return nil, err
@@ -797,6 +838,10 @@ func (p *parser) parsePathJoin() (Expression, error) {
 // parseConcatenation parses + expressions. + is right-associative in just:
 // a + b + c = a + (b + c).
 func (p *parser) parseConcatenation() (Expression, error) {
+	defer p.leaveExpr(1)
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
 	left, err := p.parseValue()
 	if err != nil {
 		return nil, err
@@ -861,6 +906,10 @@ func (p *parser) parseValue() (Expression, error) {
 }
 
 func (p *parser) parseConditional() (Expression, error) {
+	defer p.leaveExpr(1)
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
 	pos := p.current().Pos
 	p.advance() // skip 'if'
 	p.skipNewlines()
