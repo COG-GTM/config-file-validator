@@ -3,7 +3,9 @@ package reporter
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/fatih/color"
 )
@@ -50,7 +52,7 @@ func printGroupNodeStdout(node *GroupNode, groupPath []string, depth int) summar
 	totalSummary := summary{}
 
 	for _, child := range node.Children {
-		fmt.Printf("%s%s\n", strings.Repeat("    ", depth), child.Key)
+		fmt.Printf("%s%s\n", strings.Repeat("    ", depth), guardLineStart(escapeControlChars(child.Key)))
 		childSummary := printGroupNodeStdout(child, append(slices.Clone(groupPath), child.Key), depth+1)
 		totalSummary.Passed += childSummary.Passed
 		totalSummary.Failed += childSummary.Failed
@@ -114,7 +116,7 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 	for _, report := range reports {
 		if !report.IsValid {
 			fmtRed := color.New(color.FgRed)
-			result.Text += fmtRed.Sprintf("%s× %s\n", indent, report.FilePath)
+			result.Text += fmtRed.Sprintf("%s× %s\n", indent, escapeControlChars(report.FilePath))
 			for _, e := range report.ValidationErrors {
 				paddedString := padErrorString(e)
 				result.Text += fmtRed.Sprintf("%serror: %v\n", errIndent, paddedString)
@@ -125,7 +127,7 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 			}
 			result.Summary.Failed++
 		} else {
-			result.Text += color.New(color.FgGreen).Sprintf("%s✓ %s\n", indent, report.FilePath)
+			result.Text += color.New(color.FgGreen).Sprintf("%s✓ %s\n", indent, escapeControlChars(report.FilePath))
 			result.Summary.Passed++
 		}
 		for _, w := range report.Warnings {
@@ -139,13 +141,53 @@ func createStdoutReport(reports []Report, indentSize int) reportStdout {
 
 // padErrorString adds padding to every newline in the error
 // string, except the first line and removes any trailing newlines
-// or spaces
+// or spaces. Control characters in each line are escaped and
+// continuation lines are guarded against CI log command prefixes.
 func padErrorString(errS string) string {
 	errS = strings.TrimSpace(errS)
 	lines := strings.Split(errS, "\n")
-	for idx := 1; idx < len(lines); idx++ {
-		lines[idx] = "               " + lines[idx]
+	for idx := range lines {
+		line := escapeControlChars(strings.TrimSuffix(lines[idx], "\r"))
+		if idx > 0 {
+			line = "               " + guardLineStart(line)
+		}
+		lines[idx] = line
 	}
 	paddedErr := strings.Join(lines, "\n")
 	return paddedErr
+}
+
+// escapeControlChars replaces control characters and Unicode line or
+// paragraph separators with a visible Go escape sequence so untrusted
+// text cannot start new output lines or emit terminal escape codes.
+func escapeControlChars(s string) string {
+	if !strings.ContainsFunc(s, isUnsafeRune) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if isUnsafeRune(r) {
+			quoted := strconv.QuoteRuneToASCII(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isUnsafeRune(r rune) bool {
+	return (unicode.IsControl(r) && r != '\t') || r == '\u2028' || r == '\u2029'
+}
+
+// guardLineStart escapes the first character of a line that would
+// otherwise be read as a GitHub Actions ("::") or Azure Pipelines
+// ("##[") log command once leading whitespace is trimmed.
+func guardLineStart(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(trimmed, "::") && !strings.HasPrefix(trimmed, "##[") {
+		return line
+	}
+	lead := line[:len(line)-len(trimmed)]
+	return lead + fmt.Sprintf("\\x%02x", trimmed[0]) + trimmed[1:]
 }
