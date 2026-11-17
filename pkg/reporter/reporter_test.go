@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -434,6 +435,90 @@ func Test_stdoutGroupedLeafRootDoesNotDuplicateSummary(t *testing.T) {
 	assert.Contains(t, output, "/fake/path/bad.xml")
 	assert.Contains(t, output, "Total Summary: 1 succeeded, 1 failed")
 	require.Equal(t, 1, strings.Count(output, "Summary:"))
+}
+
+// --- Stdout output injection tests ---
+
+var injectionReports = []Report{
+	{
+		FileName:         "x.json",
+		FilePath:         "/repo/a\n::error file=README.md::forged path\x1b[2K.json",
+		IsValid:          false,
+		ValidationErrors: []string{"bad value\n::error::x\r\n##[error]azure\n  ::warning::y\x1b]0;title\x07"},
+		Notes:            []string{"note\n::notice::n\u2028::error::sep"},
+	},
+	{
+		FileName: "ok.json",
+		FilePath: "/repo/ok\r::error::cr\u0085.json",
+		IsValid:  true,
+		Warnings: []string{"warn\n::stop-commands::token"},
+	},
+}
+
+func requireNoInjectedLines(t *testing.T, output string) {
+	t.Helper()
+
+	for _, r := range []string{"\x1b", "\x07", "\r", "\u0085", "\u2028"} {
+		require.NotContains(t, output, r)
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		require.Falsef(t, strings.HasPrefix(trimmed, "::"), "line starts with workflow command: %q", line)
+		require.Falsef(t, strings.HasPrefix(trimmed, "##["), "line starts with log command: %q", line)
+	}
+}
+
+func Test_stdoutReportEscapesControlCharacters(t *testing.T) {
+	noColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = noColor })
+
+	output, err := captureStdout(t, func() error {
+		return NewStdoutReporter("").Print(injectionReports)
+	})
+	require.NoError(t, err)
+	requireNoInjectedLines(t, output)
+	assert.Contains(t, output, `× /repo/a\n::error file=README.md::forged path\x1b[2K.json`)
+	assert.Contains(t, output, `✓ /repo/ok\r::error::cr\u0085.json`)
+	assert.Contains(t, output, "error: bad value\n")
+	assert.Contains(t, output, `\x3a:error::x`)
+	assert.Contains(t, output, `\x23#[error]azure`)
+	assert.Contains(t, output, `  \x3a:warning::y\x1b]0;title\a`)
+	assert.Contains(t, output, `note: note`)
+	assert.Contains(t, output, `\x3a:notice::n\u2028::error::sep`)
+	assert.Contains(t, output, `\x3a:stop-commands::token`)
+
+	tmpDir := t.TempDir()
+	require.NoError(t, NewStdoutReporter(tmpDir).Print(injectionReports))
+	fileOutput, err := os.ReadFile(filepath.Join(tmpDir, "result.txt"))
+	require.NoError(t, err)
+	requireNoInjectedLines(t, string(fileOutput))
+}
+
+func Test_stdoutGroupedReportEscapesControlCharacters(t *testing.T) {
+	noColor := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = noColor })
+
+	output, err := captureStdout(t, func() error {
+		return PrintGroupStdout(&GroupNode{
+			Children: []*GroupNode{
+				{Key: "::error::group\n::error file=a::b\x1b[31m", Reports: injectionReports},
+			},
+		})
+	})
+	require.NoError(t, err)
+	requireNoInjectedLines(t, output)
+	assert.Contains(t, output, `\x3a:error::group\n::error file=a::b\x1b[31m`+"\n")
+	assert.Contains(t, output, "Total Summary: 1 succeeded, 1 failed")
+}
+
+func Test_padErrorStringKeepsPlainMultiLineErrors(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "unable to parse keys:\n               key1\n               key2", padErrorString("unable to parse keys:\nkey1\nkey2\n"))
+	require.Equal(t, "a\n               b", padErrorString("a\r\nb"))
+	require.Equal(t, "tab\tkept", padErrorString("tab\tkept"))
 }
 
 // --- Grouped JSON tests ---
