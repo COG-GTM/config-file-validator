@@ -131,6 +131,10 @@ var testData = []struct {
 	{"invalidJson", []byte(`{test": "test"}`), false, JSONValidator{}},
 	{"validYaml", []byte("a: 1\nb: 2"), true, YAMLValidator{}},
 	{"invalidYaml", []byte("a: b\nc: d:::::::::::::::"), false, YAMLValidator{}},
+	{"validYamlMultiDocument", []byte("a: 1\n---\nb: 2\n"), true, YAMLValidator{}},
+	{"invalidYamlSecondDocument", []byte("a: 1\n---\nb: c: d:::::::::::::::\n"), false, YAMLValidator{}},
+	{"duplicateKeyYamlSecondDocument", []byte("a: 1\n---\nb: 1\nb: 2\n"), false, YAMLValidator{}},
+	{"emptyYaml", []byte(""), true, YAMLValidator{}},
 	{"validXml", []byte("<test>\n</test>"), true, XMLValidator{}},
 	{"invalidXml", []byte("<xml\n"), false, XMLValidator{}},
 	{"invalidToml", []byte("name = 123__456"), false, TomlValidator{}},
@@ -542,6 +546,86 @@ func Test_YAMLMarshalToJSONInvalid(t *testing.T) {
 	t.Parallel()
 	_, err := YAMLValidator{}.MarshalToJSON([]byte("a: b\nc: d:::::::::::::::"))
 	require.Error(t, err)
+}
+
+func Test_YAMLMarshalToJSONMultiDocument(t *testing.T) {
+	t.Parallel()
+	_, err := YAMLValidator{}.MarshalToJSON([]byte("a: 1\n---\nb: 2\n"))
+	require.ErrorIs(t, err, ErrMultipleYAMLDocuments)
+}
+
+func Test_YAMLMarshalToJSONEmpty(t *testing.T) {
+	t.Parallel()
+	out, err := YAMLValidator{}.MarshalToJSON([]byte(""))
+	require.NoError(t, err)
+	require.Equal(t, "null", string(out))
+}
+
+func Test_YAMLMarshalDocumentsToJSON(t *testing.T) {
+	t.Parallel()
+	docs, err := YAMLValidator{}.MarshalDocumentsToJSON([]byte("a: 1\n---\nb: two\n---\n- 3\n"))
+	require.NoError(t, err)
+	require.Equal(t, []string{`{"a":1}`, `{"b":"two"}`, `[3]`}, []string{string(docs[0]), string(docs[1]), string(docs[2])})
+}
+
+func Test_YAMLMarshalDocumentsToJSONInvalidSecondDocument(t *testing.T) {
+	t.Parallel()
+	_, err := YAMLValidator{}.MarshalDocumentsToJSON([]byte("a: 1\n---\nb: c: d:::::::::::::::\n"))
+	require.Error(t, err)
+}
+
+func Test_YAMLMarshalDocumentsToJSONUnsupportedValue(t *testing.T) {
+	t.Parallel()
+	_, err := YAMLValidator{}.MarshalDocumentsToJSON([]byte("1: a\n"))
+	require.Error(t, err)
+}
+
+func Test_YAMLValidateSyntaxSecondDocumentErrorLine(t *testing.T) {
+	t.Parallel()
+	valid, err := YAMLValidator{}.ValidateSyntax([]byte("a: 1\nb: 2\n---\nc: d: e\n"))
+	require.False(t, valid)
+
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	require.Equal(t, 4, ve.Line)
+}
+
+func Test_YAMLValidateSchemaSecondDocumentInvalid(t *testing.T) {
+	t.Parallel()
+	schema := writeTestSchema(t)
+	yaml := "# yaml-language-server: $schema=schema.json\nhost: db.example.com\nport: 5432\ndatabase: mydb\n---\nhost: db.example.com\nport: not_a_number\ndatabase: mydb\n"
+	valid, err := YAMLValidator{}.ValidateSchema([]byte(yaml), filepath.Join(filepath.Dir(schema), "test.yaml"))
+	require.False(t, valid)
+
+	var se *SchemaErrors
+	require.ErrorAs(t, err, &se)
+	require.Equal(t, []string{"document 2: port: Invalid type. Expected: integer, given: string"}, se.Items)
+	require.Equal(t, 7, se.Positions[0].Line)
+}
+
+func Test_YAMLValidateSchemaMultiDocumentValid(t *testing.T) {
+	t.Parallel()
+	schema := writeTestSchema(t)
+	yaml := "# yaml-language-server: $schema=schema.json\nhost: a\nport: 1\ndatabase: x\n---\nhost: b\nport: 2\ndatabase: y\n"
+	valid, err := YAMLValidator{}.ValidateSchema([]byte(yaml), filepath.Join(filepath.Dir(schema), "test.yaml"))
+	require.NoError(t, err)
+	require.True(t, valid)
+}
+
+func Test_YAMLValidateSchemaUnsupportedValue(t *testing.T) {
+	t.Parallel()
+	yaml := "# yaml-language-server: $schema=https://example.com/s.json\n1: a\n"
+	valid, err := YAMLValidator{}.ValidateSchema([]byte(yaml), "")
+	require.False(t, valid)
+	require.Error(t, err)
+}
+
+func Test_JSONSchemaValidateDocumentsBadDocument(t *testing.T) {
+	t.Parallel()
+	schema := writeTestSchema(t)
+	valid, err := JSONSchemaValidateDocuments(tools.FileURL(schema), [][]byte{[]byte(`{bad`)}, nil)
+	require.False(t, valid)
+	require.ErrorContains(t, err, "schema validation error")
 }
 
 func Test_TomlMarshalToJSON(t *testing.T) {
@@ -1129,7 +1213,7 @@ func Test_buildJSONPositionMapEmpty(t *testing.T) {
 func Test_buildYAMLPositionMap(t *testing.T) {
 	t.Parallel()
 	doc := []byte("name: app\nserver:\n  host: example.local\n  port: 8080\n")
-	positions := buildYAMLPositionMap(doc)
+	positions := firstYAMLPositionMap(t, doc)
 
 	require.Contains(t, positions, "(root)")
 	require.Contains(t, positions, "(root).name")
@@ -1145,7 +1229,7 @@ func Test_buildYAMLPositionMap(t *testing.T) {
 func Test_buildYAMLPositionMapSequence(t *testing.T) {
 	t.Parallel()
 	doc := []byte("items:\n  - one\n  - two\n  - three\n")
-	positions := buildYAMLPositionMap(doc)
+	positions := firstYAMLPositionMap(t, doc)
 
 	require.Contains(t, positions, "(root).items")
 	require.Contains(t, positions, "(root).items.0")
@@ -1155,10 +1239,30 @@ func Test_buildYAMLPositionMapSequence(t *testing.T) {
 	require.Equal(t, 4, positions["(root).items.2"].Line)
 }
 
-func Test_buildYAMLPositionMapInvalidYAML(t *testing.T) {
+func firstYAMLPositionMap(t *testing.T, b []byte) map[string]SourcePosition {
+	t.Helper()
+	docs, err := decodeYAMLDocuments(b)
+	require.NoError(t, err)
+	require.NotEmpty(t, docs)
+	return yamlPositionMap(docs[0].node)
+}
+
+func Test_yamlPositionMapSecondDocument(t *testing.T) {
 	t.Parallel()
-	positions := buildYAMLPositionMap([]byte("a: b\nc: d:::::::::::::::"))
-	require.Nil(t, positions)
+	docs, err := decodeYAMLDocuments([]byte("a: 1\n---\nname: app\nport: 8080\n"))
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+
+	positions := yamlPositionMap(docs[1].node)
+	require.Equal(t, 3, positions["(root).name"].Line)
+	require.Equal(t, 4, positions["(root).port"].Line)
+}
+
+func Test_decodeYAMLDocumentsInvalidYAML(t *testing.T) {
+	t.Parallel()
+	docs, err := decodeYAMLDocuments([]byte("a: b\nc: d:::::::::::::::"))
+	require.Error(t, err)
+	require.Nil(t, docs)
 }
 
 func Test_JSONSchemaErrorPositions(t *testing.T) {

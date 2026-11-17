@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,10 +22,41 @@ var _ Validator = YAMLValidator{}
 
 var yamlLineRe = regexp.MustCompile(`yaml: line (\d+): (.*)`)
 
+// ErrMultipleYAMLDocuments is returned by YAMLValidator.MarshalToJSON when
+// the input contains more than one YAML document. Use MarshalDocumentsToJSON
+// to convert every document.
+var ErrMultipleYAMLDocuments = errors.New("yaml: input contains multiple documents; use MarshalDocumentsToJSON")
+
+type yamlDocument struct {
+	value any
+	node  *yaml.Node
+}
+
+// decodeYAMLDocuments decodes every document in a YAML stream. yaml.Unmarshal
+// stops after the first document, so later documents would otherwise never be
+// checked.
+func decodeYAMLDocuments(b []byte) ([]yamlDocument, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	var docs []yamlDocument
+	for {
+		node := &yaml.Node{}
+		err := dec.Decode(node)
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var value any
+		if err := node.Decode(&value); err != nil {
+			return nil, err
+		}
+		docs = append(docs, yamlDocument{value: value, node: node})
+	}
+}
+
 func (YAMLValidator) ValidateSyntax(b []byte) (bool, error) {
-	var output any
-	err := yaml.Unmarshal(b, &output)
-	if err != nil {
+	if _, err := decodeYAMLDocuments(b); err != nil {
 		if m := yamlLineRe.FindStringSubmatch(err.Error()); m != nil {
 			if line, convErr := strconv.Atoi(m[1]); convErr == nil {
 				return false, &ValidationError{Err: errors.New(m[2]), Line: line}
@@ -36,12 +68,43 @@ func (YAMLValidator) ValidateSyntax(b []byte) (bool, error) {
 	return true, nil
 }
 
-func (YAMLValidator) MarshalToJSON(b []byte) ([]byte, error) {
-	var doc any
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+// MarshalToJSON converts a single-document YAML file to JSON. It returns
+// ErrMultipleYAMLDocuments for multi-document input so callers cannot
+// silently validate only the first document.
+func (v YAMLValidator) MarshalToJSON(b []byte) ([]byte, error) {
+	docs, err := v.MarshalDocumentsToJSON(b)
+	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(doc)
+	if len(docs) > 1 {
+		return nil, ErrMultipleYAMLDocuments
+	}
+	return docs[0], nil
+}
+
+// MarshalDocumentsToJSON converts every document in a YAML stream to JSON.
+// Input with no documents yields a single JSON null.
+func (YAMLValidator) MarshalDocumentsToJSON(b []byte) ([][]byte, error) {
+	docs, err := decodeYAMLDocuments(b)
+	if err != nil {
+		return nil, err
+	}
+	return yamlDocumentsToJSON(docs)
+}
+
+func yamlDocumentsToJSON(docs []yamlDocument) ([][]byte, error) {
+	if len(docs) == 0 {
+		return [][]byte{[]byte("null")}, nil
+	}
+	out := make([][]byte, 0, len(docs))
+	for _, doc := range docs {
+		docJSON, err := json.Marshal(doc.value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, docJSON)
+	}
+	return out, nil
 }
 
 func (YAMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
@@ -50,18 +113,21 @@ func (YAMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return true, ErrNoSchema
 	}
 
-	var doc any
-	if err := yaml.Unmarshal(b, &doc); err != nil {
-		return false, err
-	}
-
-	docJSON, err := json.Marshal(doc)
+	docs, err := decodeYAMLDocuments(b)
 	if err != nil {
 		return false, err
 	}
 
-	posMap := buildYAMLPositionMap(b)
-	return JSONSchemaValidateWithPositions(resolveSchemaURL(schemaURL, filePath), docJSON, posMap)
+	docsJSON, err := yamlDocumentsToJSON(docs)
+	if err != nil {
+		return false, err
+	}
+
+	posMaps := make([]map[string]SourcePosition, len(docs))
+	for i, doc := range docs {
+		posMaps[i] = yamlPositionMap(doc.node)
+	}
+	return JSONSchemaValidateDocuments(resolveSchemaURL(schemaURL, filePath), docsJSON, posMaps)
 }
 
 // extractYAMLSchemaComment scans for the yaml-language-server schema modeline:
@@ -90,16 +156,12 @@ func extractYAMLSchemaComment(b []byte) string {
 	return ""
 }
 
-// buildYAMLPositionMap parses YAML into a Node tree and builds a map from
-// gojsonschema context paths (e.g. "(root).server.port") to source positions.
-func buildYAMLPositionMap(b []byte) map[string]SourcePosition {
-	var root yaml.Node
-	if err := yaml.Unmarshal(b, &root); err != nil {
-		return nil
-	}
+// yamlPositionMap builds a map from gojsonschema context paths
+// (e.g. "(root).server.port") to source positions for one YAML document.
+func yamlPositionMap(doc *yaml.Node) map[string]SourcePosition {
 	positions := make(map[string]SourcePosition)
-	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
-		walkYAMLNode(root.Content[0], "(root)", positions)
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		walkYAMLNode(doc.Content[0], "(root)", positions)
 	}
 	return positions
 }

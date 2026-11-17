@@ -27,6 +27,7 @@
 ## Schema types
 
 - JSON, JSONC, YAML, TOML, and TOON files are validated against [JSON Schema](https://json-schema.org/).
+- Multi-document YAML files (documents separated by `---`) have every document checked for syntax and validated against the schema.
 - XML files are validated against [XSD](https://www.w3.org/XML/Schema) (XML Schema Definition).
 - SARIF files are validated against a built-in schema matched to the file's version field.
 
