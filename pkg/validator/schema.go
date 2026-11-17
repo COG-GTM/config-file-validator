@@ -28,10 +28,12 @@ func JSONSchemaValidateWithPositions(schemaURL string, docJSON []byte, posMap ma
 }
 
 func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
-	schemaLoader := gojsonschema.NewReferenceLoader(schemaURL)
-	documentLoader := gojsonschema.NewBytesLoader(docJSON)
+	schema, err := loadSchema(schemaURL)
+	if err != nil {
+		return false, fmt.Errorf("schema validation error: %w", err)
+	}
 
-	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	result, err := schema.Validate(gojsonschema.NewBytesLoader(docJSON))
 	if err != nil {
 		return false, fmt.Errorf("schema validation error: %w", err)
 	}
@@ -53,6 +55,27 @@ func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]Sour
 	}
 
 	return true, nil
+}
+
+// loadSchema compiles the schema at schemaURL. Remote HTTP(S) schemas are
+// downloaded with a timeout and size cap before being handed to gojsonschema,
+// which otherwise reads them without either limit.
+func loadSchema(schemaURL string) (*gojsonschema.Schema, error) {
+	root := gojsonschema.NewReferenceLoader(schemaURL)
+	parsed, err := url.Parse(schemaURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return gojsonschema.NewSchema(root)
+	}
+
+	body, err := tools.FetchRemoteSchema(schemaURL)
+	if err != nil {
+		return nil, err
+	}
+	loader := gojsonschema.NewSchemaLoader()
+	if err := loader.AddSchema(schemaURL, gojsonschema.NewBytesLoader(body)); err != nil {
+		return nil, err
+	}
+	return loader.Compile(root)
 }
 
 func resolveSchemaURL(schemaURL, filePath string) string {
