@@ -2,10 +2,15 @@ package schemastore
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +40,23 @@ func writeSchema(t *testing.T, bundlePath, filename, content string) string {
 	p := filepath.Join(bundlePath, "src", "schemas", "json", filename)
 	require.NoError(t, os.WriteFile(p, []byte(content), 0600))
 	return p
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// stubClient returns a client that answers every request with status and body
+// without touching the network.
+func stubClient(status int, body string) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: status,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{},
+			Request:    r,
+		}, nil
+	})}
 }
 
 func TestOpen(t *testing.T) {
@@ -113,11 +135,13 @@ func TestLookupExternalURLSkipped(t *testing.T) {
 
 	store, err := Open(dir)
 	require.NoError(t, err)
+	store.cacheDir = t.TempDir()
+	store.client = stubClient(http.StatusOK, `{"type":"object"}`)
 
-	// External URLs are now returned as remote fallback
+	// External URLs are fetched into the cache; the remote URL is never returned
 	path, found := store.Resolve("/project/foo.json")
 	require.True(t, found)
-	require.Equal(t, "https://example.com/foo.json", path)
+	require.Equal(t, filepath.Join(store.cacheDir, "example.com", "foo.json"), path)
 }
 
 func TestLookupMissingSchemaFile(t *testing.T) {
@@ -130,11 +154,12 @@ func TestLookupMissingSchemaFile(t *testing.T) {
 
 	store, err := Open(dir)
 	require.NoError(t, err)
+	store.cacheDir = t.TempDir()
+	store.client = stubClient(http.StatusOK, `{"type":"object"}`)
 
 	path, found := store.Resolve("/project/package.json")
 	require.True(t, found)
-	// Result is either a cached local path or the remote URL
-	require.Contains(t, path, "package.json")
+	require.Equal(t, filepath.Join(store.cacheDir, "www.schemastore.org", "package.json"), path)
 }
 
 func TestLookupGlobStarJson(t *testing.T) {
@@ -161,15 +186,17 @@ func TestOpenEmbedded(t *testing.T) {
 	require.Empty(t, store.schemaDir)
 }
 
-func TestOpenEmbeddedLookupReturnsRemoteURL(t *testing.T) {
+func TestOpenEmbeddedLookupFetchesAndCaches(t *testing.T) {
 	t.Parallel()
 	store, err := OpenEmbedded()
 	require.NoError(t, err)
+	store.cacheDir = t.TempDir()
+	store.client = stubClient(http.StatusOK, `{"type":"object"}`)
 
 	// package.json is in the SchemaStore catalog
 	path, found := store.Resolve("/project/package.json")
 	require.True(t, found)
-	// Result is either a cached local path or the remote URL
+	require.True(t, strings.HasPrefix(path, store.cacheDir), path)
 	require.Contains(t, path, "package.json")
 }
 
@@ -221,6 +248,7 @@ func TestLookupCacheExpired(t *testing.T) {
 		},
 		cacheDir: cacheDir,
 		cacheTTL: 0, // expired immediately
+		client:   stubClient(http.StatusNotFound, ""),
 	}
 
 	// Pre-populate cache with old mtime
@@ -230,10 +258,16 @@ func TestLookupCacheExpired(t *testing.T) {
 	oldTime := time.Now().Add(-48 * time.Hour)
 	require.NoError(t, os.Chtimes(cachedPath, oldTime, oldTime))
 
-	// Cache is expired, fetch will fail (fake URL), falls back to remote URL
-	path, found := store.Resolve("/project/config.json")
+	// Cache is expired and the fetch fails: report the error instead of
+	// handing the remote URL to the schema loader
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, "https://example.com/nonexistent.json", path)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "HTTP 404")
+
+	path, found = store.Resolve("/project/config.json")
+	require.False(t, found)
+	require.Empty(t, path)
 }
 
 func TestLookupNoCacheDir(t *testing.T) {
@@ -247,15 +281,16 @@ func TestLookupNoCacheDir(t *testing.T) {
 		cacheTTL: defaultCacheTTL,
 	}
 
-	// No cache dir, fetch will fail, falls back to remote URL
-	path, found := store.Resolve("/project/config.json")
+	// No cache dir: nothing to fetch into, report the error
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, "https://example.com/nonexistent.json", path)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "no cache directory")
 }
 
 func TestFetchAndCacheSuccess(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"type":"object"}`))
 	}))
@@ -268,6 +303,7 @@ func TestFetchAndCacheSuccess(t *testing.T) {
 		},
 		cacheDir: cacheDir,
 		cacheTTL: defaultCacheTTL,
+		client:   srv.Client(),
 	}
 
 	path, found := store.Resolve("/project/config.json")
@@ -282,7 +318,7 @@ func TestFetchAndCacheSuccess(t *testing.T) {
 
 func TestFetchAndCache404(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
@@ -294,17 +330,18 @@ func TestFetchAndCache404(t *testing.T) {
 		},
 		cacheDir: cacheDir,
 		cacheTTL: defaultCacheTTL,
+		client:   srv.Client(),
 	}
 
-	// Fetch fails, falls back to remote URL
-	path, found := store.Resolve("/project/config.json")
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, srv.URL+"/missing.json", path)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "HTTP 404")
 }
 
 func TestFetchAndCache500(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -316,33 +353,42 @@ func TestFetchAndCache500(t *testing.T) {
 		},
 		cacheDir: cacheDir,
 		cacheTTL: defaultCacheTTL,
+		client:   srv.Client(),
 	}
 
-	path, found := store.Resolve("/project/config.json")
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, srv.URL+"/error.json", path)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "HTTP 500")
 }
 
 func TestFetchAndCacheNetworkError(t *testing.T) {
 	t.Parallel()
-	cacheDir := t.TempDir()
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	client := srv.Client()
+	unreachable := srv.URL + "/unreachable.json"
+	srv.Close()
+
 	store := &Store{
 		entries: []catalogEntry{
-			{FileMatch: []string{"config.json"}, URL: "http://127.0.0.1:1/unreachable.json"}, // DevSkim: ignore DS162092 - test server address, not debug code
+			{FileMatch: []string{"config.json"}, URL: unreachable},
 		},
-		cacheDir: cacheDir,
+		cacheDir: t.TempDir(),
 		cacheTTL: defaultCacheTTL,
+		client:   client,
 	}
 
-	path, found := store.Resolve("/project/config.json")
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, "http://127.0.0.1:1/unreachable.json", path) // DevSkim: ignore DS162092 - test server address, not debug code
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "fetching schema")
+	require.NotErrorIs(t, err, ErrBlockedURL)
 }
 
 func TestFetchAndCacheThenHitCache(t *testing.T) {
 	t.Parallel()
 	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"type":"object"}`))
@@ -356,6 +402,7 @@ func TestFetchAndCacheThenHitCache(t *testing.T) {
 		},
 		cacheDir: cacheDir,
 		cacheTTL: defaultCacheTTL,
+		client:   srv.Client(),
 	}
 
 	// First call fetches
@@ -372,7 +419,7 @@ func TestFetchAndCacheThenHitCache(t *testing.T) {
 
 func TestFetchAndCacheUnwritableDir(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"type":"object"}`))
 	}))
@@ -384,12 +431,14 @@ func TestFetchAndCacheUnwritableDir(t *testing.T) {
 		},
 		cacheDir: "/nonexistent/readonly/path",
 		cacheTTL: defaultCacheTTL,
+		client:   srv.Client(),
 	}
 
-	// Cache write fails, falls back to remote URL
-	path, found := store.Resolve("/project/config.json")
+	// Cache write fails: report the error, never return the remote URL
+	path, found, err := store.ResolveSchema("/project/config.json")
 	require.True(t, found)
-	require.Equal(t, srv.URL+"/schema.json", path)
+	require.Empty(t, path)
+	require.ErrorContains(t, err, "creating cache directory")
 }
 
 func TestOpenKeepsExtensionlessFileMatch(t *testing.T) {
@@ -436,4 +485,239 @@ func TestResolveExtensionlessDotfileNoMatch(t *testing.T) {
 	// Different dotfile should not match
 	_, found := store.Resolve("/project/.eslintrc")
 	require.False(t, found)
+}
+
+// countingServer returns a TLS test server that counts requests and serves a schema.
+func countingServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"object"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// allowOnly returns an address check that permits only srv's listener and
+// applies the default public-address policy to everything else.
+func allowOnly(t *testing.T, srv *httptest.Server) func(netip.AddrPort) error {
+	t.Helper()
+	allowed := netip.MustParseAddrPort(srv.Listener.Addr().String())
+	return func(ap netip.AddrPort) error {
+		if ap == allowed {
+			return nil
+		}
+		return checkPublicAddr(ap)
+	}
+}
+
+// policyClient builds the production client with a custom address check and
+// trusts the httptest certificate.
+func policyClient(t *testing.T, srv *httptest.Server, check func(netip.AddrPort) error) *http.Client {
+	t.Helper()
+	client := newSchemaClient(check)
+	tlsCfg := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	client.Transport.(*http.Transport).TLSClientConfig = tlsCfg
+	return client
+}
+
+func TestFetchRejectsLoopbackCatalogURL(t *testing.T) {
+	t.Parallel()
+	srv, hits := countingServer(t, nil)
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: srv.URL + "/schema.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+		client:   policyClient(t, srv, checkPublicAddr),
+	}
+
+	path, found, err := store.ResolveSchema("/project/config.json")
+	require.True(t, found)
+	require.Empty(t, path)
+	require.ErrorIs(t, err, ErrBlockedURL)
+	require.Equal(t, int32(0), hits.Load(), "loopback server must not receive a request")
+
+	// Resolve must not hand the URL to the schema loader for a second request
+	path, found = store.Resolve("/project/config.json")
+	require.False(t, found)
+	require.Empty(t, path)
+	require.Equal(t, int32(0), hits.Load())
+}
+
+func TestFetchDefaultClientRejectsLoopback(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: srv.URL + "/schema.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+	}
+
+	_, found, err := store.ResolveSchema("/project/config.json")
+	require.True(t, found)
+	require.ErrorIs(t, err, ErrBlockedURL)
+	require.Equal(t, int32(0), hits.Load())
+}
+
+func TestFetchRejectsNonHTTPSCatalogURL(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+
+	for _, u := range []string{srv.URL + "/schema.json", "file:///etc/passwd", "https:///schema.json"} {
+		store := &Store{
+			entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: u}},
+			cacheDir: t.TempDir(),
+			cacheTTL: defaultCacheTTL,
+			client:   srv.Client(),
+		}
+		path, found, err := store.ResolveSchema("/project/config.json")
+		require.True(t, found, u)
+		require.Empty(t, path, u)
+		require.ErrorIs(t, err, ErrBlockedURL, u)
+	}
+	require.Equal(t, int32(0), hits.Load())
+}
+
+func TestFetchRejectsRedirectToLoopback(t *testing.T) {
+	t.Parallel()
+	internal, internalHits := countingServer(t, nil)
+	allowed, allowedHits := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, internal.URL+"/admin", http.StatusFound)
+	})
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: allowed.URL + "/schema.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+		client:   policyClient(t, allowed, allowOnly(t, allowed)),
+	}
+
+	path, found, err := store.ResolveSchema("/project/config.json")
+	require.True(t, found)
+	require.Empty(t, path)
+	require.ErrorIs(t, err, ErrBlockedURL)
+	require.Equal(t, int32(1), allowedHits.Load())
+	require.Equal(t, int32(0), internalHits.Load(), "redirect to loopback must not be followed")
+}
+
+func TestFetchRejectsRedirectToHTTP(t *testing.T) {
+	t.Parallel()
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { plainHits.Add(1) }))
+	defer plain.Close()
+	allowed, _ := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/schema.json", http.StatusFound)
+	})
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: allowed.URL + "/schema.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+		client: policyClient(t, allowed, func(netip.AddrPort) error {
+			return nil
+		}),
+	}
+
+	_, _, err := store.ResolveSchema("/project/config.json")
+	require.ErrorIs(t, err, ErrBlockedURL)
+	require.ErrorContains(t, err, "not https")
+	require.Equal(t, int32(0), plainHits.Load())
+}
+
+func TestFetchFollowsAllowedRedirect(t *testing.T) {
+	t.Parallel()
+	allowed, hits := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old.json" {
+			http.Redirect(w, r, "/new.json", http.StatusMovedPermanently)
+			return
+		}
+		_, _ = w.Write([]byte(`{"type":"object"}`))
+	})
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: allowed.URL + "/old.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+		client:   policyClient(t, allowed, allowOnly(t, allowed)),
+	}
+
+	path, found, err := store.ResolveSchema("/project/config.json")
+	require.NoError(t, err)
+	require.True(t, found)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"object"}`, string(data))
+	require.Equal(t, int32(2), hits.Load())
+}
+
+func TestFetchStopsRedirectLoop(t *testing.T) {
+	t.Parallel()
+	allowed, hits := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, r.URL.Path, http.StatusFound)
+	})
+
+	store := &Store{
+		entries:  []catalogEntry{{FileMatch: []string{"config.json"}, URL: allowed.URL + "/loop.json"}},
+		cacheDir: t.TempDir(),
+		cacheTTL: defaultCacheTTL,
+		client:   policyClient(t, allowed, allowOnly(t, allowed)),
+	}
+
+	_, _, err := store.ResolveSchema("/project/config.json")
+	require.ErrorIs(t, err, ErrBlockedURL)
+	require.ErrorContains(t, err, "redirects")
+	require.Equal(t, int32(maxRedirects), hits.Load())
+}
+
+func TestCheckPublicAddr(t *testing.T) {
+	t.Parallel()
+	blocked := []string{
+		"127.0.0.1:443", "10.0.0.1:443", "172.16.0.1:443", "192.168.1.1:443",
+		"169.254.169.254:80", "0.0.0.0:443", "0.1.2.3:443", "100.64.0.1:443",
+		"192.0.0.1:443", "198.18.0.1:443", "224.0.0.1:443", "240.0.0.1:443",
+		"255.255.255.255:443", "[::1]:443", "[::]:443", "[fe80::1]:443",
+		"[fd00::1]:443", "[ff02::1]:443", "[::ffff:127.0.0.1]:443", "[::ffff:169.254.169.254]:443",
+	}
+	for _, a := range blocked {
+		err := checkPublicAddr(netip.MustParseAddrPort(a))
+		require.ErrorIs(t, err, ErrBlockedURL, a)
+	}
+	for _, a := range []string{"104.16.0.1:443", "8.8.8.8:443", "[2606:4700::1]:443"} {
+		require.NoError(t, checkPublicAddr(netip.MustParseAddrPort(a)), a)
+	}
+}
+
+func TestCheckResolvedHost(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	u, err := url.Parse("https://127.0.0.1:8443/schema.json")
+	require.NoError(t, err)
+	require.ErrorIs(t, checkResolvedHost(ctx, u, checkPublicAddr), ErrBlockedURL)
+
+	u, err = url.Parse("https://[::1]/schema.json")
+	require.NoError(t, err)
+	var seen netip.AddrPort
+	require.NoError(t, checkResolvedHost(ctx, u, func(ap netip.AddrPort) error {
+		seen = ap
+		return nil
+	}))
+	require.Equal(t, uint16(443), seen.Port())
+
+	u, err = url.Parse("https://name.invalid/schema.json")
+	require.NoError(t, err)
+	err = checkResolvedHost(ctx, u, checkPublicAddr)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrBlockedURL)
 }

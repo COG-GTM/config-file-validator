@@ -306,7 +306,11 @@ func (c *CLI) validateSchema(v validator.Validator, content []byte, filePath str
 	}
 
 	if c.schemaStore != nil {
-		if schemaPath, ok := c.schemaStore.Resolve(filePath); ok {
+		schemaPath, ok, err := c.schemaStore.ResolveSchema(filePath)
+		if err != nil {
+			return false, nil, err
+		}
+		if ok {
 			valid, _, err := validateWithExternal(v, content, schemaPath)
 			return valid, nil, err
 		}

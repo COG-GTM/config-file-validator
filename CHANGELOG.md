@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SchemaStore schemas are fetched only over `https` with a client that refuses loopback, private, link-local, and other internal addresses (checked after DNS resolution and on every redirect), and a failed or rejected fetch is reported as a schema error instead of handing the remote URL to the schema loader for a second, unrestricted request. This prevents a catalog from a repository-supplied `schemastore-path` from making the validator send requests to internal services.
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).
