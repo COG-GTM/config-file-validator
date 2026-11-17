@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,13 @@ type JSONCValidator struct{}
 
 var _ Validator = JSONCValidator{}
 
+// maxJSONCDepth matches the nesting limit enforced by encoding/json.
+const maxJSONCDepth = 10000
+
 func (JSONCValidator) ValidateSyntax(b []byte) (bool, error) {
+	if err := checkJSONCDepth(b); err != nil {
+		return false, err
+	}
 	_, err := hujson.Parse(b)
 	if err != nil {
 		line, col := parseHujsonError(err)
@@ -30,6 +37,9 @@ func (JSONCValidator) ValidateSyntax(b []byte) (bool, error) {
 }
 
 func (JSONCValidator) MarshalToJSON(b []byte) ([]byte, error) {
+	if err := checkJSONCDepth(b); err != nil {
+		return nil, err
+	}
 	standardized, err := hujson.Standardize(b)
 	if err != nil {
 		return nil, err
@@ -46,6 +56,9 @@ func (JSONCValidator) MarshalToJSON(b []byte) ([]byte, error) {
 }
 
 func (JSONCValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	if err := checkJSONCDepth(b); err != nil {
+		return false, err
+	}
 	standardized, err := hujson.Standardize(b)
 	if err != nil {
 		return false, err
@@ -83,6 +96,57 @@ func (JSONCValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 	}
 
 	return JSONSchemaValidate(schemaURL, cleanDoc)
+}
+
+// checkJSONCDepth rejects input nested deeper than maxJSONCDepth before it
+// reaches hujson, whose parser recurses once per nesting level. Brackets
+// inside strings and comments are not counted.
+func checkJSONCDepth(b []byte) error {
+	depth := 0
+	for i := 0; i < len(b); i++ {
+		switch b[i] {
+		case '"':
+			for i++; i < len(b) && b[i] != '"'; i++ {
+				if b[i] == '\\' {
+					i++
+				}
+			}
+		case '/':
+			if i+1 >= len(b) {
+				continue
+			}
+			switch b[i+1] {
+			case '/':
+				if j := bytes.IndexByte(b[i:], '\n'); j >= 0 {
+					i += j
+				} else {
+					i = len(b)
+				}
+			case '*':
+				if j := bytes.Index(b[i+2:], []byte("*/")); j >= 0 {
+					i += j + 3
+				} else {
+					i = len(b)
+				}
+			}
+		case '[', '{':
+			depth++
+			if depth > maxJSONCDepth {
+				line := 1 + bytes.Count(b[:i], []byte("\n"))
+				col := 1 + i - (bytes.LastIndexByte(b[:i], '\n') + 1)
+				return &ValidationError{
+					Err:    fmt.Errorf("exceeded max depth of %d", maxJSONCDepth),
+					Line:   line,
+					Column: col,
+				}
+			}
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 // parseHujsonError extracts line and column from hujson error messages.

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -897,4 +898,29 @@ func Test_CLIStdinWithQuiet(t *testing.T) {
 	exitStatus, err := cli.Run()
 	require.NoError(t, err)
 	require.Equal(t, 0, exitStatus)
+}
+
+func Test_CLIDeeplyNestedJSONAndJSONC(t *testing.T) {
+	dir := t.TempDir()
+	nested := strings.Repeat("[", 10_000_000)
+	testhelper.WriteFile(t, dir, "deep.json", nested)
+	testhelper.WriteFile(t, dir, "deep.jsonc", nested)
+
+	capture := &captureReporter{}
+	fsFinder := finder.FileSystemFinderInit(
+		finder.WithPathRoots(dir),
+	)
+	cli := Init(
+		WithFinder(fsFinder),
+		WithReporters(capture),
+	)
+	exitStatus, err := cli.Run()
+	require.NoError(t, err)
+	require.Equal(t, 1, exitStatus)
+	require.Len(t, capture.reports, 2)
+	for _, r := range capture.reports {
+		require.False(t, r.IsValid, r.FileName)
+		require.Equal(t, "syntax", r.ErrorType, r.FileName)
+		require.Empty(t, r.Notes, r.FileName)
+	}
 }
