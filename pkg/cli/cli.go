@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,7 +33,16 @@ type CLI struct {
 	stdinData     []byte
 	stdinFileType filetype.FileType
 	errorFound    bool
+	maxFileSize   int64
 }
+
+// DefaultMaxFileSize is the largest file, in bytes, that Run will read.
+const DefaultMaxFileSize int64 = 64 << 20
+
+var (
+	errNotRegularFile = errors.New("not a regular file")
+	errFileTooLarge   = errors.New("file exceeds maximum size")
+)
 
 // Option configures a CLI instance.
 type Option func(*CLI)
@@ -94,8 +104,9 @@ func WithStdinData(data []byte, ft filetype.FileType) Option {
 
 func Init(opts ...Option) *CLI {
 	c := &CLI{
-		finder:    finder.FileSystemFinderInit(),
-		reporters: []reporter.Reporter{reporter.NewStdoutReporter("")},
+		finder:      finder.FileSystemFinderInit(),
+		reporters:   []reporter.Reporter{reporter.NewStdoutReporter("")},
+		maxFileSize: DefaultMaxFileSize,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -117,19 +128,18 @@ func (c *CLI) Run() (int, error) {
 
 	var reports []reporter.Report
 	for _, f := range foundFiles {
-		content, err := os.ReadFile(f.Path)
+		if f.ReadError != nil {
+			reports = append(reports, c.unreadableReport(f, f.ReadError))
+			continue
+		}
+		content, err := readFileBounded(f.Path, c.maxFileSize)
 		if err != nil {
-			if isBrokenSymlink(f.Path) {
-				report := reporter.Report{
-					FileName:         f.Name,
-					FilePath:         f.Path,
-					IsValid:          false,
-					ValidationError:  errors.New("broken symlink"),
-					ValidationErrors: []string{"broken symlink"},
-					ErrorType:        "other",
-				}
-				c.errorFound = true
-				reports = append(reports, report)
+			switch {
+			case isBrokenSymlink(f.Path):
+				reports = append(reports, c.unreadableReport(f, errors.New("broken symlink")))
+				continue
+			case errors.Is(err, errNotRegularFile), errors.Is(err, errFileTooLarge):
+				reports = append(reports, c.unreadableReport(f, err))
 				continue
 			}
 			return 2, fmt.Errorf("unable to read file: %w", err)
@@ -150,6 +160,45 @@ func (c *CLI) Run() (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// unreadableReport records a matched file that was not read as a failure.
+func (c *CLI) unreadableReport(f finder.FileMetadata, err error) reporter.Report {
+	c.errorFound = true
+	return reporter.Report{
+		FileName:         f.Name,
+		FilePath:         f.Path,
+		IsValid:          false,
+		ValidationError:  err,
+		ValidationErrors: []string{err.Error()},
+		ErrorType:        "other",
+	}
+}
+
+// readFileBounded reads a regular file, refusing anything larger than limit bytes.
+func readFileBounded(path string, limit int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNotRegularFile
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	content, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, fmt.Errorf("%w of %d bytes", errFileTooLarge, limit)
+	}
+	return content, nil
 }
 
 // validate runs syntax and schema validation on content and returns a Report.
