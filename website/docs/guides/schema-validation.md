@@ -104,6 +104,8 @@ validator --schemastore .
 
 Schemas are fetched on first use and cached locally. Repeated runs don't require network access.
 
+Catalog schemas are fetched only over `https` from public addresses. URLs that use another scheme, or that resolve or redirect to loopback, private, link-local, or other internal addresses, are rejected and the file is reported with a schema error. If a schema can't be fetched or cached, the file fails with a schema error instead of the validator retrying the remote URL.
+
 :::info
 Schemas are cached in `~/.cache/cfv/schemas/` (or `$XDG_CACHE_HOME/cfv/schemas/`) with a 24-hour TTL.
 :::

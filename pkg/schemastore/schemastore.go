@@ -49,6 +49,7 @@ type Store struct {
 	schemaDir string
 	cacheDir  string
 	cacheTTL  time.Duration
+	client    *http.Client
 }
 
 // Open reads the SchemaStore catalog from bundlePath and returns a Store.
@@ -100,10 +101,22 @@ func newStore(data []byte, bundlePath string) (*Store, error) {
 	return s, nil
 }
 
-// Lookup matches a file path against the catalog and returns a schema location.
-// Resolution order: local clone → cache → remote URL.
-// Remote schemas are cached locally for subsequent runs.
+// Resolve matches a file path against the catalog and returns a schema location.
+// It returns false when no entry matches or the matched schema could not be
+// retrieved; use ResolveSchema to get the retrieval error.
 func (s *Store) Resolve(filePath string) (string, bool) {
+	path, found, err := s.ResolveSchema(filePath)
+	if err != nil {
+		return "", false
+	}
+	return path, found
+}
+
+// ResolveSchema matches a file path against the catalog and returns a local
+// schema path. Resolution order: local clone → cache → remote fetch.
+// Remote schemas are fetched only over https from public addresses and are
+// cached locally; the remote URL itself is never returned.
+func (s *Store) ResolveSchema(filePath string) (string, bool, error) {
 	name := filepath.Base(filePath)
 	for _, entry := range s.entries {
 		for _, pattern := range entry.FileMatch {
@@ -115,7 +128,7 @@ func (s *Store) Resolve(filePath string) (string, bool) {
 			if s.schemaDir != "" {
 				if localPath := s.resolveLocal(entry.URL); localPath != "" {
 					if _, err := os.Stat(localPath); err == nil {
-						return localPath, true
+						return localPath, true, nil
 					}
 				}
 			}
@@ -124,17 +137,16 @@ func (s *Store) Resolve(filePath string) (string, bool) {
 			}
 			// Try cache
 			if cached, ok := s.lookupCache(entry.URL); ok {
-				return cached, true
+				return cached, true, nil
 			}
-			// Fetch and cache
-			if cached, err := s.fetchAndCache(entry.URL); err == nil {
-				return cached, true
+			cached, err := s.fetchAndCache(entry.URL)
+			if err != nil {
+				return "", true, err
 			}
-			// Fall back to remote URL (no cache available)
-			return entry.URL, true
+			return cached, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 func (s *Store) resolveLocal(schemaURL string) string {
@@ -202,10 +214,25 @@ func (s *Store) lookupCache(schemaURL string) (string, bool) {
 	return cachePath, true
 }
 
+func (s *Store) httpClient() *http.Client {
+	if s.client != nil {
+		return s.client
+	}
+	return defaultSchemaClient
+}
+
 func (s *Store) fetchAndCache(schemaURL string) (string, error) {
+	parsed, err := url.Parse(schemaURL)
+	if err != nil {
+		return "", fmt.Errorf("fetching schema: %w", err)
+	}
+	if err := checkSchemaURL(parsed); err != nil {
+		return "", fmt.Errorf("fetching schema %s: %w", schemaURL, err)
+	}
+
 	cachePath, err := s.cachePathForURL(schemaURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fetching schema %s: %w", schemaURL, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
@@ -216,7 +243,7 @@ func (s *Store) fetchAndCache(schemaURL string) (string, error) {
 		return "", fmt.Errorf("fetching schema: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching schema: %w", err)
 	}
