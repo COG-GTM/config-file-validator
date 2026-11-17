@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HOCON validation no longer follows `include` directives or falls back to environment variables for `${...}` substitutions. A validated `.hocon` file could make the validator open arbitrary local files (for example `include required(file("../../etc/hostname"))` or a self-include that exhausts file handles) and probe which environment variables are set. Include directives are now rejected with `include directives are not supported`, and substitutions resolve only against the document itself
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).
