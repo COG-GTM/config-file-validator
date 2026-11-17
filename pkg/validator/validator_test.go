@@ -1265,6 +1265,9 @@ func Test_HclDeepNestingRejected(t *testing.T) {
 		{"bracketsInCommentIgnored", []byte("# " + strings.Repeat("[", 5000) + "\n/* " + strings.Repeat("{", 5000) + " */\na = 1\n"), true},
 		{"bracketsInHeredocIgnored", []byte("a = <<-EOT\n" + strings.Repeat("[", 5000) + "\n  EOT\n"), true},
 		{"escapedInterpolationIgnored", []byte(`a = "` + strings.Repeat("$${", 5000) + `"` + "\n"), true},
+		{"balancedDirectives", []byte("a = <<-EOT\r\n  %{~ for x in y ~}%{ if x }${x}%{ else }-%{ endif }%{ endfor ~}\r\n  EOT\r\n"), true},
+		{"nestedInterpolationsAndBlocks", []byte("b {\n  c = { d = [\"${e[\"f\"]}\", (1 + 2)] } // ]]]\n}\n"), true},
+		{"lessThanIsNotHeredoc", []byte("a = 1 << 2\n"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
