@@ -41,6 +41,14 @@ stderr 'resolves outside the config file directory'
 ! exists ../elsewhere/victim.txt
 cd ..
 
+# .. after a missing directory cannot reach an existing external symlink
+cd missingdir
+symlink out.txt -> ../elsewhere/victim2.txt
+! exec validator good.json
+stderr 'cannot resolve'
+! exists ../elsewhere/victim2.txt
+cd ..
+
 # Directory output whose default result file is a symlink outside
 cd dirout
 symlink result.txt -> ../victim.txt
@@ -90,6 +98,12 @@ reporter = ["standard:out.txt"]
 reporter = ["standard:link/../victim.txt"]
 
 -- linkdir/good.json --
+{"key": "value"}
+
+-- missingdir/.cfv.toml --
+reporter = ["standard:missing/../out.txt"]
+
+-- missingdir/good.json --
 {"key": "value"}
 
 -- dirout/.cfv.toml --

@@ -1187,7 +1187,11 @@ func resolveOutputPath(root, base, raw string) (string, error) {
 		next := filepath.Join(current, elem)
 		info, err := os.Lstat(next)
 		if os.IsNotExist(err) {
-			// Nothing below a missing element exists, so the rest is lexical.
+			// Nothing below a missing element exists, so the rest is lexical
+			// unless it climbs back out through "..".
+			if slices.Contains(elems[i+1:], "..") {
+				return "", fmt.Errorf("cannot resolve %q: %w", next, err)
+			}
 			current = filepath.Join(append([]string{next}, elems[i+1:]...)...)
 			break
 		}
