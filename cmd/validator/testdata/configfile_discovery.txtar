@@ -1,0 +1,63 @@
+# ============================================================
+# .cfv.toml auto-discovery trust boundary
+# ============================================================
+
+# A .cfv.toml planted in a shared parent outside any repo is not applied
+cd $WORK/shared/build-123/project
+exec validator good.json
+stdout '✓'
+! stderr 'Using config file'
+
+# Inside a git repo the repo-root config is applied and its path is printed
+cd $WORK/repo/sub
+exec validator good.json
+! stdout '✓'
+stderr 'Using config file .*repo.\.cfv\.toml'
+
+# Discovery does not climb above the repo root
+cd $WORK/outer/repo2/sub
+exec validator good.json
+stdout '✓'
+! stderr 'Using config file'
+
+# A config in the current directory is applied and reported
+cd $WORK/shared
+exec validator build-123/project/good.json
+! stdout '✓'
+stderr 'Using config file .*shared.\.cfv\.toml'
+
+# --config still loads any explicit file without the discovery message
+cd $WORK/shared/build-123/project
+exec validator --config=$WORK/shared/.cfv.toml good.json
+! stdout '✓'
+! stderr 'Using config file'
+
+# A world-writable config is ignored with a warning
+[unix] chmod 0666 $WORK/repo3/.cfv.toml
+[unix] cd $WORK/repo3
+[unix] exec validator good.json
+[unix] stdout '✓'
+[unix] stderr 'warning: ignoring config file .*writable by all users'
+
+-- shared/.cfv.toml --
+quiet = true
+-- shared/build-123/project/good.json --
+{}
+-- repo/.git/HEAD --
+ref: refs/heads/main
+-- repo/.cfv.toml --
+quiet = true
+-- repo/sub/good.json --
+{}
+-- outer/.cfv.toml --
+quiet = true
+-- outer/repo2/.git/HEAD --
+ref: refs/heads/main
+-- outer/repo2/sub/good.json --
+{}
+-- repo3/.git/HEAD --
+ref: refs/heads/main
+-- repo3/.cfv.toml --
+quiet = true
+-- repo3/good.json --
+{}

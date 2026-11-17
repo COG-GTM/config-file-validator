@@ -106,24 +106,81 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Discover walks up from startDir looking for a .cfv.toml file.
+// Discover walks up from startDir looking for a trusted .cfv.toml file.
 // Returns the path if found, or empty string if not found.
+// See DiscoverWithWarnings for the search boundary and trust rules.
 func Discover(startDir string) string {
+	path, _ := DiscoverWithWarnings(startDir)
+	return path
+}
+
+// DiscoverWithWarnings walks up from startDir looking for a .cfv.toml file.
+//
+// The search never climbs past the nearest ancestor that contains a .git
+// entry or is the user's home directory. If neither exists above startDir,
+// only startDir itself is checked, so a config planted in a shared parent
+// directory such as /tmp is never picked up.
+//
+// A config file that is owned by another user (other than root), is
+// writable by everyone, or sits in a directory that everyone can write to
+// without the sticky bit is not used; a warning describing why is returned
+// instead. The returned path is empty when no trusted config file is found.
+func DiscoverWithWarnings(startDir string) (string, []string) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
-		return ""
+		return "", nil
 	}
+	boundary := searchBoundary(dir, userHomeDir())
 	for {
 		path := filepath.Join(dir, FileName)
-		if _, err := os.Stat(path); err == nil {
-			return path
+		if info, err := os.Stat(path); err == nil {
+			if reason := untrustedReason(path, info, dir); reason != "" {
+				return "", []string{fmt.Sprintf("ignoring config file %s: %s; pass --config to use it explicitly", path, reason)}
+			}
+			return path, nil
+		}
+		if dir == boundary {
+			return "", nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			return "", nil
 		}
 		dir = parent
 	}
+}
+
+// searchBoundary returns the highest directory Discover may inspect: the
+// nearest ancestor of start (inclusive) that contains .git or equals home.
+// When there is no such ancestor, start itself is the boundary.
+func searchBoundary(start, home string) string {
+	dir := start
+	for {
+		if home != "" && dir == home {
+			return dir
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return start
+		}
+		dir = parent
+	}
+}
+
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	home, err = filepath.Abs(home)
+	if err != nil || filepath.Dir(home) == home {
+		// A home directory at the filesystem root would make the search unbounded.
+		return ""
+	}
+	return home
 }
 
 func joinErrors(errs []string) string {

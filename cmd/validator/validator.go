@@ -1024,7 +1024,14 @@ func applyConfigFile(cfg *validatorConfig) (*configfile.ValidatorOptions, error)
 	if *cfg.configPath != "" {
 		cfgPath = *cfg.configPath
 	} else {
-		cfgPath = configfile.Discover(".")
+		var warnings []string
+		cfgPath, warnings = configfile.DiscoverWithWarnings(".")
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		}
+		if cfgPath != "" {
+			fmt.Fprintf(os.Stderr, "Using config file %s\n", cfgPath)
+		}
 	}
 	if cfgPath == "" {
 		return nil, nil

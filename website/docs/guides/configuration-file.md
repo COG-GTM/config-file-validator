@@ -7,7 +7,9 @@ The validator supports a `.cfv.toml` configuration file for project-level defaul
 
 ## Discovery
 
-On startup, the validator looks for `.cfv.toml` in the current directory and walks up parent directories until it finds one or reaches the filesystem root.
+On startup, the validator looks for `.cfv.toml` in the current directory and walks up parent directories until it finds one. The search stops at the repository root (the nearest directory containing `.git`) or at your home directory, whichever comes first. Outside a repository and outside your home directory, only the current directory is checked, so a `.cfv.toml` in a shared directory such as `/tmp` is never picked up.
+
+On Linux and macOS, a discovered file is skipped with a warning when it is owned by another user (other than root), is writable by all users, or sits in a directory that all users can write to without the sticky bit. The path of the discovered file is printed to stderr as `Using config file <path>`.
 
 To specify a file explicitly:
 

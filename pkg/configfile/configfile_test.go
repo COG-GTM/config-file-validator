@@ -130,6 +130,7 @@ func TestDiscoverInParentDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeConfig(t, dir, `quiet = true`)
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o700))
 
 	child := filepath.Join(dir, "sub", "deep")
 	require.NoError(t, os.MkdirAll(child, 0755))
@@ -144,6 +145,61 @@ func TestDiscoverNotFound(t *testing.T) {
 
 	path := Discover(dir)
 	require.Empty(t, path)
+}
+
+func setHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func TestDiscoverIgnoresSharedParentOutsideRepo(t *testing.T) {
+	setHome(t, t.TempDir())
+	shared := t.TempDir()
+	writeConfig(t, shared, `no-schema = true`)
+
+	child := filepath.Join(shared, "build-123", "project")
+	require.NoError(t, os.MkdirAll(child, 0o755))
+
+	path, warnings := DiscoverWithWarnings(child)
+	require.Empty(t, path)
+	require.Empty(t, warnings)
+}
+
+func TestDiscoverStopsAtRepoRoot(t *testing.T) {
+	setHome(t, t.TempDir())
+	shared := t.TempDir()
+	writeConfig(t, shared, `no-schema = true`)
+
+	repo := filepath.Join(shared, "repo")
+	child := filepath.Join(repo, "sub")
+	require.NoError(t, os.MkdirAll(child, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: elsewhere\n"), 0o600))
+
+	require.Empty(t, Discover(child))
+
+	writeConfig(t, repo, `quiet = true`)
+	require.Equal(t, filepath.Join(repo, FileName), Discover(child))
+}
+
+func TestDiscoverStopsAtHomeDir(t *testing.T) {
+	shared := t.TempDir()
+	writeConfig(t, shared, `no-schema = true`)
+
+	home := filepath.Join(shared, "alice")
+	child := filepath.Join(home, "project", "sub")
+	require.NoError(t, os.MkdirAll(child, 0o755))
+	setHome(t, home)
+
+	require.Empty(t, Discover(child))
+
+	writeConfig(t, home, `quiet = true`)
+	require.Equal(t, filepath.Join(home, FileName), Discover(child))
+}
+
+func TestSearchBoundaryIgnoresRootHome(t *testing.T) {
+	setHome(t, string(filepath.Separator))
+	require.Empty(t, userHomeDir())
 }
 
 func TestLoadAllBooleans(t *testing.T) {

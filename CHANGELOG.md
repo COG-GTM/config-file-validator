@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `.cfv.toml` auto-discovery no longer walks to the filesystem root: it stops at the repository root (`.git`) or the home directory, skips files owned by another user or writable by all users, and prints the path of the config file it loads to stderr, so a config planted in a shared parent directory such as `/tmp` is not applied.
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).
