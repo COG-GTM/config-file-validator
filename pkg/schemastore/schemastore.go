@@ -184,7 +184,15 @@ func (s *Store) cachePathForURL(schemaURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.cacheDir, parsed.Host, parsed.Path), nil
+	rel := strings.TrimPrefix(parsed.Path, "/")
+	cachePath := filepath.Join(s.cacheDir, parsed.Host, rel)
+	within, relErr := filepath.Rel(s.cacheDir, cachePath)
+	if parsed.Host == "" || rel == "" || strings.Contains(parsed.Host+rel, `\`) ||
+		!filepath.IsLocal(parsed.Host) || !filepath.IsLocal(rel) ||
+		relErr != nil || !filepath.IsLocal(within) {
+		return "", fmt.Errorf("schema URL %q does not map to a path inside the cache directory", schemaURL)
+	}
+	return cachePath, nil
 }
 
 func (s *Store) lookupCache(schemaURL string) (string, bool) {
@@ -230,13 +238,21 @@ func (s *Store) fetchAndCache(schemaURL string) (string, error) {
 		return "", fmt.Errorf("creating cache directory: %w", err)
 	}
 
-	f, err := os.Create(cachePath)
+	f, err := os.CreateTemp(filepath.Dir(cachePath), ".cfv-schema-*")
 	if err != nil {
 		return "", fmt.Errorf("creating cache file: %w", err)
 	}
-	defer f.Close()
+	tmpPath := f.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := os.Rename(tmpPath, cachePath); err != nil {
 		return "", fmt.Errorf("writing cache file: %w", err)
 	}
 
