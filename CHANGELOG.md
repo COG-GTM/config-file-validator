@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--require-schema --schema-map` now fails when a mapped file's validator does not support external schema validation.
 - Unsupported-extension caching no longer mutates the user-provided `ExcludeFileTypes` map during file walks.
 - Multiple reporters targeting the same output file now fail during startup instead of silently overwriting a report.
+- `--schema-map` is now enforced even when a file declares its own schema (`$schema`, `yaml-language-server`, `xsi:noNamespaceSchemaLocation`); the file must pass both. Previously a scanned file could declare a permissive schema to bypass the mapped schema and satisfy `--require-schema`.
 - KnownFiles now take priority over extension matching in the finder, so `tsconfig.json` resolves to JSONC (not JSON)
 - Extension exclusion cache no longer prevents known files from being found
 - Linguist known files that conflict with dedicated validators are automatically excluded (e.g. `.editorconfig` stays with EditorConfig, not INI)

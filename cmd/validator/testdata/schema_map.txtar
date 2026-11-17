@@ -26,9 +26,21 @@ stdout '×'
 stdout 'error: schema: --schema-map matched this file'
 ! stdout 'warning: --schema-map matched this file'
 
-# Document $schema takes priority over --schema-map
-exec validator --schema-map=with_schema.json:strict_schema.json with_schema.json
+# --schema-map is enforced even when the document declares its own $schema
+! exec validator --schema-map=with_schema.json:strict_schema.json with_schema.json
+stdout '×'
+
+# A document cannot swap the mapped schema for a permissive one
+! exec validator --schema-map=deploy.json:strict_schema.json deploy.json
+stdout '×'
+! exec validator --require-schema --schema-map=deploy.json:strict_schema.json deploy.json
+stdout '×'
+
+# Document $schema still applies alongside a matching --schema-map
+exec validator --schema-map=with_schema.json:schema.json with_schema.json
 stdout '✓'
+! exec validator --schema-map=bad_own.json:schema.json bad_own.json
+stdout '×'
 
 # Invalid --schema-map format
 ! exec validator --schema-map=badformat .
@@ -66,6 +78,26 @@ KEY=VALUE
 -- with_schema.json --
 {
   "$schema": "schema.json",
+  "name": "test",
+  "version": "1.0"
+}
+-- loose.json --
+{}
+-- deploy.json --
+{
+  "$schema": "loose.json",
+  "debug": true
+}
+-- own_strict.json --
+{
+  "type": "object",
+  "properties": {
+    "version": { "type": "string", "pattern": "^2\\." }
+  }
+}
+-- bad_own.json --
+{
+  "$schema": "own_strict.json",
   "name": "test",
   "version": "1.0"
 }

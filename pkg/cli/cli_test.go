@@ -587,8 +587,8 @@ func Test_CLISchemaMapPriorityOverStore(t *testing.T) {
 	require.Equal(t, 1, exitStatus) // fails against strict schema
 }
 
-func Test_CLIDocumentSchemaPriorityOverAll(t *testing.T) {
-	// Document $schema should win over schema-map and schemastore
+func Test_CLIDocumentSchemaPriorityOverStore(t *testing.T) {
+	// Document $schema should win over schemastore when no --schema-map matches
 	dir := t.TempDir()
 	bundle := setupMiniSchemaStore(t)
 	testhelper.WriteFile(t, dir, "own.json", `{
@@ -596,23 +596,104 @@ func Test_CLIDocumentSchemaPriorityOverAll(t *testing.T) {
 		"properties": {"title": {"type": "string"}}
 	}`)
 	testhelper.WriteFile(t, dir, "package.json", `{"$schema": "own.json", "title": "hello"}`)
-	strict := testhelper.WriteFile(t, dir, "strict.json", `{
-		"type": "object",
-		"required": ["id"],
-		"additionalProperties": false
-	}`)
 
 	fsFinder := finder.FileSystemFinderInit(
 		finder.WithPathRoots(dir + "/package.json"),
 	)
 	cli := Init(
 		WithFinder(fsFinder),
-		WithSchemaMap(map[string]string{"package.json": strict}),
 		WithSchemaStore(bundle),
 	)
 	exitStatus, err := cli.Run()
 	require.NoError(t, err)
 	require.Equal(t, 0, exitStatus) // passes against own schema
+}
+
+const strictSchemaMapSchema = `{
+	"type": "object",
+	"required": ["id"],
+	"properties": {"id": {"type": "integer"}},
+	"additionalProperties": false
+}`
+
+func runSchemaMapCLI(t *testing.T, dir, file, schema string, opts ...Option) (int, *captureReporter) {
+	t.Helper()
+	capturingReporter := &captureReporter{}
+	fsFinder := finder.FileSystemFinderInit(
+		finder.WithPathRoots(filepath.Join(dir, file)),
+	)
+	opts = append([]Option{
+		WithFinder(fsFinder),
+		WithReporters(capturingReporter),
+		WithSchemaMap(map[string]string{"**/" + file: schema}),
+	}, opts...)
+	exitStatus, err := Init(opts...).Run()
+	require.NoError(t, err)
+	return exitStatus, capturingReporter
+}
+
+func Test_CLISchemaMapEnforcedOverDocumentSchema(t *testing.T) {
+	// A file cannot replace the operator's --schema-map schema by declaring a permissive $schema
+	dir := t.TempDir()
+	strict := testhelper.WriteFile(t, dir, "strict.json", strictSchemaMapSchema)
+	testhelper.WriteFile(t, dir, "loose.json", `{}`)
+	testhelper.WriteFile(t, dir, "config.json", `{"$schema": "loose.json", "debug": true}`)
+
+	exitStatus, rep := runSchemaMapCLI(t, dir, "config.json", strict)
+	require.Equal(t, 1, exitStatus)
+	require.Len(t, rep.reports, 1)
+	require.False(t, rep.reports[0].IsValid)
+}
+
+func Test_CLISchemaMapEnforcedOverDocumentSchemaWithStore(t *testing.T) {
+	dir := t.TempDir()
+	bundle := setupMiniSchemaStore(t)
+	strict := testhelper.WriteFile(t, dir, "strict.json", strictSchemaMapSchema)
+	testhelper.WriteFile(t, dir, "own.json", `{"type": "object"}`)
+	testhelper.WriteFile(t, dir, "package.json", `{"$schema": "own.json", "title": "hello"}`)
+
+	exitStatus, _ := runSchemaMapCLI(t, dir, "package.json", strict, WithSchemaStore(bundle))
+	require.Equal(t, 1, exitStatus)
+}
+
+func Test_CLISchemaMapEnforcedOverYAMLDocumentSchema(t *testing.T) {
+	dir := t.TempDir()
+	strict := testhelper.WriteFile(t, dir, "strict.json", strictSchemaMapSchema)
+	testhelper.WriteFile(t, dir, "loose.json", `{}`)
+	testhelper.WriteFile(t, dir, "deploy.yaml", "# yaml-language-server: $schema=loose.json\ndebug: true\n")
+
+	exitStatus, _ := runSchemaMapCLI(t, dir, "deploy.yaml", strict)
+	require.Equal(t, 1, exitStatus)
+}
+
+func Test_CLISchemaMapEnforcedWithRequireSchema(t *testing.T) {
+	// Declaring a permissive schema must not satisfy --require-schema in place of the mapped schema
+	dir := t.TempDir()
+	strict := testhelper.WriteFile(t, dir, "strict.json", strictSchemaMapSchema)
+	testhelper.WriteFile(t, dir, "loose.json", `{}`)
+	testhelper.WriteFile(t, dir, "config.json", `{"$schema": "loose.json", "debug": true}`)
+
+	exitStatus, _ := runSchemaMapCLI(t, dir, "config.json", strict, WithRequireSchema(true))
+	require.Equal(t, 1, exitStatus)
+}
+
+func Test_CLISchemaMapAndDocumentSchemaBothEnforced(t *testing.T) {
+	// The document's own schema still applies after the mapped schema passes
+	dir := t.TempDir()
+	strict := testhelper.WriteFile(t, dir, "strict.json", strictSchemaMapSchema)
+	testhelper.WriteFile(t, dir, "own.json", `{
+		"type": "object",
+		"properties": {"id": {"type": "integer", "minimum": 10}}
+	}`)
+	testhelper.WriteFile(t, dir, "fails_own.json", `{"$schema": "own.json", "id": 1}`)
+	testhelper.WriteFile(t, dir, "passes_both.json", `{"$schema": "own.json", "id": 42}`)
+
+	exitStatus, _ := runSchemaMapCLI(t, dir, "fails_own.json", strict)
+	require.Equal(t, 1, exitStatus)
+
+	exitStatus, rep := runSchemaMapCLI(t, dir, "passes_both.json", strict)
+	require.Equal(t, 0, exitStatus)
+	require.True(t, rep.reports[0].IsValid)
 }
 
 func Test_CLIRequireSchemaWithSchemaStore(t *testing.T) {
