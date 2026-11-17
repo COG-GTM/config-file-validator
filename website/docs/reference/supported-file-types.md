@@ -14,7 +14,7 @@
 | SARIF           | `.sarif`                |   ✅    |   ✅    |
 | HCL             | `.hcl`, `.tf`           |   ✅    |   —    |
 | INI             | `.ini`, `.cfg`          |   ✅    |   —    |
-| HOCON           | `.hocon`                |   ✅    |   —    |
+| HOCON           | `.conf`                 |   ✅    |   —    |
 | ENV             | `.env`                  |   ✅    |   —    |
 | CSV             | `.csv`                  |   ✅    |   —    |
 | Properties      | `.properties`           |   ✅    |   —    |
