@@ -1,13 +1,10 @@
 package schemastore
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,10 +12,11 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/Boeing/config-file-validator/v2/pkg/tools"
 )
 
 const defaultCacheTTL = 24 * time.Hour
-const fetchTimeout = 30 * time.Second
 
 //go:embed catalog.json
 var embeddedCatalog []byte
@@ -193,10 +191,14 @@ func (s *Store) lookupCache(schemaURL string) (string, bool) {
 		return "", false
 	}
 	info, err := os.Stat(cachePath)
-	if err != nil {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > tools.MaxRemoteSchemaSize {
 		return "", false
 	}
 	if time.Since(info.ModTime()) > s.cacheTTL {
+		return "", false
+	}
+	data, err := os.ReadFile(cachePath)
+	if err != nil || !json.Valid(data) {
 		return "", false
 	}
 	return cachePath, true
@@ -208,39 +210,47 @@ func (s *Store) fetchAndCache(schemaURL string) (string, error) {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, schemaURL, nil)
+	data, err := tools.FetchRemoteSchema(schemaURL)
 	if err != nil {
-		return "", fmt.Errorf("fetching schema: %w", err)
+		return "", err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetching schema: %w", err)
+	if err := writeFileAtomic(cachePath, data); err != nil {
+		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetching schema: HTTP %d", resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
-		return "", fmt.Errorf("creating cache directory: %w", err)
-	}
-
-	f, err := os.Create(cachePath)
-	if err != nil {
-		return "", fmt.Errorf("creating cache file: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return "", fmt.Errorf("writing cache file: %w", err)
-	}
-
 	return cachePath, nil
+}
+
+// writeFileAtomic writes data to a temporary file next to path and renames it
+// into place, so a failed write never leaves a partial file at path.
+func writeFileAtomic(path string, data []byte) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating cache directory: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating cache file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("writing cache file: %w", err)
+	}
+	return nil
 }
 
 func hasSupported(fileMatch []string) bool {
