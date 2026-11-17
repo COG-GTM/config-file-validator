@@ -2,7 +2,9 @@ package schemastore
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +23,10 @@ import (
 
 const defaultCacheTTL = 24 * time.Hour
 const fetchTimeout = 30 * time.Second
+
+const maxCacheNameSuffix = 64
+
+var unsafeCacheNameChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 //go:embed catalog.json
 var embeddedCatalog []byte
@@ -175,7 +183,10 @@ func defaultCacheDir() (string, error) {
 }
 
 // cachePathForURL converts a schema URL to a local cache file path.
-// e.g. https://www.schemastore.org/package.json → <cacheDir>/www.schemastore.org/package.json
+// The file name is the SHA-256 hex digest of the full URL followed by a
+// sanitized copy of the URL's base name, so URL contents (e.g. "../"
+// segments) cannot influence the directory the file is written to.
+// e.g. https://www.schemastore.org/package.json → <cacheDir>/<sha256>-package.json
 func (s *Store) cachePathForURL(schemaURL string) (string, error) {
 	if s.cacheDir == "" {
 		return "", errors.New("no cache directory")
@@ -184,7 +195,13 @@ func (s *Store) cachePathForURL(schemaURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(s.cacheDir, parsed.Host, parsed.Path), nil
+	sum := sha256.Sum256([]byte(schemaURL))
+	suffix := unsafeCacheNameChars.ReplaceAllString(path.Base(parsed.Path), "_")
+	if len(suffix) > maxCacheNameSuffix {
+		suffix = suffix[len(suffix)-maxCacheNameSuffix:]
+	}
+	name := hex.EncodeToString(sum[:]) + "-" + suffix
+	return filepath.Join(s.cacheDir, name), nil
 }
 
 func (s *Store) lookupCache(schemaURL string) (string, bool) {
@@ -226,17 +243,25 @@ func (s *Store) fetchAndCache(schemaURL string) (string, error) {
 		return "", fmt.Errorf("fetching schema: HTTP %d", resp.StatusCode)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
+	if err := os.MkdirAll(s.cacheDir, 0755); err != nil {
 		return "", fmt.Errorf("creating cache directory: %w", err)
 	}
 
-	f, err := os.Create(cachePath)
+	tmp, err := os.CreateTemp(s.cacheDir, ".fetch-*.tmp")
 	if err != nil {
 		return "", fmt.Errorf("creating cache file: %w", err)
 	}
-	defer f.Close()
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("writing cache file: %w", err)
+	}
+	if err := os.Rename(tmpPath, cachePath); err != nil {
 		return "", fmt.Errorf("writing cache file: %w", err)
 	}
 
