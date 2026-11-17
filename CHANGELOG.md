@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deeply nested justfile expressions (parentheses, `if`, function calls, `+`/`/`/`||`/`&&` chains) no longer crash the validator with a fatal stack overflow; the justfile parser now rejects expressions nested deeper than 256 levels and justfiles larger than 10 MiB with a parse error
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).

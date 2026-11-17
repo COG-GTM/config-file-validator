@@ -2,6 +2,7 @@ package justfile
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,9 @@ import (
 // are represented as AST nodes but not resolved — use ParseFile to
 // automatically resolve imports and modules from disk.
 func Parse(content []byte) (*Justfile, error) {
+	if err := checkSourceSize(content); err != nil {
+		return nil, err
+	}
 	l := newLexer(content)
 	tokens, err := l.lex()
 	if err != nil {
@@ -40,6 +44,19 @@ func ParseFile(filename string) (*Justfile, error) {
 
 const maxImportDepth = 100
 
+// maxSourceSize is the largest justfile accepted before lexing.
+const maxSourceSize = 10 << 20
+
+func checkSourceSize(content []byte) *ParseError {
+	if len(content) > maxSourceSize {
+		return &ParseError{
+			Pos:     Position{Line: 1, Column: 1},
+			Message: fmt.Sprintf("justfile exceeds maximum size of %d bytes", maxSourceSize),
+		}
+	}
+	return nil
+}
+
 func parseFileRecursive(absPath string, inProgress map[string]bool, depth int) (*Justfile, error) {
 	if depth > maxImportDepth {
 		return nil, &ParseError{
@@ -56,6 +73,11 @@ func parseFileRecursive(absPath string, inProgress map[string]bool, depth int) (
 
 	content, err := os.ReadFile(absPath)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := checkSourceSize(content); err != nil {
+		err.File = absPath
 		return nil, err
 	}
 

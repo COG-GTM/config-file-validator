@@ -10,7 +10,12 @@ type parser struct {
 	pos         int
 	file        string
 	lastComment string // most recent comment, cleared on non-comment/newline tokens
+	depth       int    // current expression nesting depth
 }
+
+// maxExpressionDepth bounds expression nesting so hostile input cannot
+// exhaust the goroutine stack in the parser or in later AST walks.
+const maxExpressionDepth = 256
 
 func newParser(tokens []token, file string) *parser {
 	return &parser{tokens: tokens, file: file}
@@ -719,12 +724,19 @@ func (p *parser) parseExpression() (Expression, error) {
 }
 
 func (p *parser) parseLogicalOr() (Expression, error) {
+	start := p.depth
+	defer func() { p.depth = start }()
+
 	left, err := p.parseLogicalAnd()
 	if err != nil {
 		return nil, err
 	}
 
 	for p.check(tokenOr) {
+		// Each operator nests the left-associative tree one level deeper.
+		if err := p.enterNested(); err != nil {
+			return nil, err
+		}
 		pos := p.current().Pos
 		p.advance()
 		right, err := p.parseLogicalAnd()
@@ -737,12 +749,19 @@ func (p *parser) parseLogicalOr() (Expression, error) {
 }
 
 func (p *parser) parseLogicalAnd() (Expression, error) {
+	start := p.depth
+	defer func() { p.depth = start }()
+
 	left, err := p.parseComparison()
 	if err != nil {
 		return nil, err
 	}
 
 	for p.check(tokenAnd) {
+		// Each operator nests the left-associative tree one level deeper.
+		if err := p.enterNested(); err != nil {
+			return nil, err
+		}
 		pos := p.current().Pos
 		p.advance()
 		right, err := p.parseComparison()
@@ -784,6 +803,10 @@ func (p *parser) parsePathJoin() (Expression, error) {
 	if p.check(tokenSlash) {
 		pos := p.current().Pos
 		p.advance()
+		if err := p.enterNested(); err != nil {
+			return nil, err
+		}
+		defer p.leaveNested()
 		// Right-associative: recurse into parsePathJoin for the right side
 		right, err := p.parsePathJoin()
 		if err != nil {
@@ -805,6 +828,10 @@ func (p *parser) parseConcatenation() (Expression, error) {
 	if p.check(tokenPlus) {
 		pos := p.current().Pos
 		p.advance()
+		if err := p.enterNested(); err != nil {
+			return nil, err
+		}
+		defer p.leaveNested()
 		// Right-associative: recurse into parseConcatenation for the right side
 		right, err := p.parseConcatenation()
 		if err != nil {
@@ -846,6 +873,10 @@ func (p *parser) parseValue() (Expression, error) {
 	case tokenLParen:
 		pos := tok.Pos
 		p.advance()
+		if err := p.enterNested(); err != nil {
+			return nil, err
+		}
+		defer p.leaveNested()
 		expr, err := p.parseExpression()
 		if err != nil {
 			return nil, err
@@ -861,6 +892,10 @@ func (p *parser) parseValue() (Expression, error) {
 }
 
 func (p *parser) parseConditional() (Expression, error) {
+	if err := p.enterNested(); err != nil {
+		return nil, err
+	}
+	defer p.leaveNested()
 	pos := p.current().Pos
 	p.advance() // skip 'if'
 	p.skipNewlines()
@@ -936,6 +971,10 @@ func (p *parser) parseConditional() (Expression, error) {
 }
 
 func (p *parser) parseFunctionCall() (Expression, error) {
+	if err := p.enterNested(); err != nil {
+		return nil, err
+	}
+	defer p.leaveNested()
 	pos := p.current().Pos
 	name := p.current().Value
 	p.advance() // name
@@ -1041,6 +1080,18 @@ func (p *parser) expectString() (string, error) {
 		return val, nil
 	}
 	return "", p.errorf("expected string, found %s", p.current().Type)
+}
+
+func (p *parser) enterNested() error {
+	p.depth++
+	if p.depth > maxExpressionDepth {
+		return p.errorf("expression nested too deeply (maximum depth is %d)", maxExpressionDepth)
+	}
+	return nil
+}
+
+func (p *parser) leaveNested() {
+	p.depth--
 }
 
 func (p *parser) skipNewlines() {

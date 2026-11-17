@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1228,6 +1229,16 @@ func Test_JustfileValidateSemanticError(t *testing.T) {
 	var ve *ValidationError
 	require.ErrorAs(t, err, &ve)
 	require.Contains(t, ve.Err.Error(), "undefined recipe")
+}
+
+func Test_JustfileValidateDeepNestingReturnsError(t *testing.T) {
+	t.Parallel()
+	input := []byte("x := " + strings.Repeat("(", 1_000_000))
+	valid, err := JustfileValidator{}.ValidateSyntax(input)
+	require.False(t, valid)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	require.Contains(t, ve.Err.Error(), "nested too deeply")
 }
 
 func Test_JustfileValidateValid(t *testing.T) {
