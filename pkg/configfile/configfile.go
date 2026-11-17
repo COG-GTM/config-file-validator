@@ -42,6 +42,7 @@ type ValidatorOptions struct {
 	CSV  *CSVOptions  `toml:"csv"`
 	JSON *JSONOptions `toml:"json"`
 	INI  *INIOptions  `toml:"ini"`
+	XML  *XMLOptions  `toml:"xml"`
 }
 
 // CSVOptions configures the CSV validator.
@@ -59,6 +60,11 @@ type JSONOptions struct {
 // INIOptions configures the INI validator.
 type INIOptions struct {
 	ForbidDuplicateKeys *bool `toml:"forbid-duplicate-keys"`
+}
+
+// XMLOptions configures the XML validator.
+type XMLOptions struct {
+	ValidateDTD *bool `toml:"validate-dtd"`
 }
 
 // Load reads and validates a .cfv.toml file at the given path.

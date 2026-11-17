@@ -79,7 +79,7 @@ Add an `xsi:noNamespaceSchemaLocation` attribute on the root element:
 
 XML uses XSD (XML Schema Definition) files rather than JSON Schema.
 
-XML files with inline DTD declarations (`<!DOCTYPE>`) are validated against the DTD during syntax checking — no separate schema declaration needed.
+XML files with inline DTD declarations (`<!DOCTYPE>`) are validated against the DTD during syntax checking — no separate schema declaration needed. Only the internal subset is used: external DTDs and external entities (`SYSTEM`/`PUBLIC` identifiers) are never loaded from disk or the network. Set `validate-dtd = false` under `[validators.xml]` in `.cfv.toml` to skip DTD validation.
 
 ### SARIF
 

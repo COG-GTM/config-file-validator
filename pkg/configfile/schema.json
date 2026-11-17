@@ -126,6 +126,16 @@
             }
           },
           "additionalProperties": false
+        },
+        "xml": {
+          "type": "object",
+          "properties": {
+            "validate-dtd": {
+              "type": "boolean",
+              "description": "If false, a DOCTYPE's internal DTD subset is not validated; only well-formedness is checked. External DTDs and entities are never loaded. Default: true."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false,

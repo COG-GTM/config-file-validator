@@ -139,6 +139,19 @@ forbid-duplicate-keys = true
 forbid-duplicate-keys = true
 ```
 
+### XML
+
+| Key            | Type    | Default | Description                                                                                             |
+|----------------|---------|---------|---------------------------------------------------------------------------------------------------------|
+| `validate-dtd` | boolean | `true`  | Validate documents against their inline `<!DOCTYPE>` DTD. Set to `false` to check well-formedness only. |
+
+External DTDs and external entities are never loaded, and entity expansion and nesting depth are bounded, regardless of this setting.
+
+```toml
+[validators.xml]
+validate-dtd = false
+```
+
 :::note
 YAML duplicate keys are always rejected by the YAML parser regardless of configuration.
 :::

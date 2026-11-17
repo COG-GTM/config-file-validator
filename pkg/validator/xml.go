@@ -21,7 +21,12 @@ var (
 	xsdErrorLineRe   = regexp.MustCompile(`^\(string\):(\d+): Schemas validity error : (.+)`)
 )
 
-type XMLValidator struct{}
+// XMLValidator validates XML syntax and, when the document declares a
+// DOCTYPE, its internal DTD subset. Set SkipDTD to check well-formedness
+// only.
+type XMLValidator struct {
+	SkipDTD bool
+}
 
 var _ Validator = XMLValidator{}
 
@@ -29,6 +34,27 @@ var _ Validator = XMLValidator{}
 func (XMLValidator) ValidateXSD(b []byte, schemaPath string) (bool, error) {
 	return ValidateXSD(b, schemaPath)
 }
+
+// newXMLParser returns a helium parser configured for untrusted input.
+// The hardening is set explicitly rather than relying on library defaults:
+// external DTDs and entities are never loaded, the filesystem and network
+// are unreachable, entities are not substituted, and nesting and entity
+// expansion are bounded.
+func newXMLParser() helium.Parser {
+	return helium.NewParser().
+		BlockXXE(true).
+		LoadExternalDTD(false).
+		SubstituteEntities(false).
+		AllowNetwork(false).
+		FS(nil).
+		MaxDepth(xmlMaxDepth).
+		MaxEntityAmplification(helium.DefaultMaxEntityAmplification).
+		MaxContentModelDepth(helium.DefaultMaxContentModelDepth).
+		MaxNodeContentSize(helium.DefaultMaxNodeContentSize)
+}
+
+// xmlMaxDepth bounds element nesting in scanned XML documents.
+const xmlMaxDepth = 256
 
 // hasDOCTYPE reports whether b contains an XML DOCTYPE declaration.
 // It walks tokens rather than doing a plain substring scan, so a
@@ -52,10 +78,10 @@ func hasDOCTYPE(b []byte) bool {
 	}
 }
 
-func (XMLValidator) ValidateSyntax(b []byte) (bool, error) {
+func (v XMLValidator) ValidateSyntax(b []byte) (bool, error) {
 	ctx := context.Background()
-	parser := helium.NewParser()
-	if hasDOCTYPE(b) {
+	parser := newXMLParser()
+	if !v.SkipDTD && hasDOCTYPE(b) {
 		parser = parser.ValidateDTD(true)
 	}
 	_, err := parser.Parse(ctx, b)
@@ -89,7 +115,7 @@ func (XMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 // Exported for use by the CLI when applying external schemas.
 func ValidateXSD(b []byte, schemaPath string) (bool, error) {
 	ctx := context.Background()
-	parser := helium.NewParser()
+	parser := newXMLParser()
 
 	schema, err := xsd.NewCompiler().CompileFile(ctx, schemaPath)
 	if err != nil {

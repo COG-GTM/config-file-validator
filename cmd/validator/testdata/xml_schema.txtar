@@ -50,6 +50,16 @@ stdout '✓'
 ! exec validator --no-schema dtd_missing_elem.xml
 stdout '×'
 
+# validators.xml.validate-dtd = false skips DTD validation but keeps well-formedness checks
+exec validator --config=cfv/no_dtd.toml dtd_missing_elem.xml
+stdout '✓'
+! exec validator --config=cfv/no_dtd.toml malformed.xml
+stdout '×'
+
+# An external DTD outside the scanned directory is never loaded
+! exec validator --no-config dtd_external_system.xml
+stdout '×'
+
 # ============================================================
 # XML XSD validation (schema-level)
 # ============================================================
@@ -110,6 +120,17 @@ stdout '×'
 # Test data
 # ============================================================
 
+-- cfv/no_dtd.toml --
+[validators.xml]
+validate-dtd = false
+-- malformed.xml --
+<config><host>
+-- outside/external.dtd --
+<!ELEMENT root (#PCDATA)>
+-- dtd_external_system.xml --
+<?xml version="1.0"?>
+<!DOCTYPE root SYSTEM "outside/external.dtd">
+<root>x</root>
 -- dtd_valid.xml --
 <?xml version="1.0"?>
 <!DOCTYPE config [
