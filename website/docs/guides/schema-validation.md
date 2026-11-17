@@ -92,6 +92,8 @@ Schema references can be:
 - **URLs** — `https://json.schemastore.org/package.json`
 - **Local file paths** — absolute or relative. Relative paths are resolved from the directory containing the config file being validated.
 
+JSON Schema references (including any `$ref` inside a schema) must point to a regular file or an `http`/`https` URL. Remote schemas time out after 30 seconds, and schemas larger than 10 MiB are rejected.
+
 ## SchemaStore integration
 
 [SchemaStore](https://www.schemastore.org/) is a community-maintained catalog of JSON Schemas for hundreds of common config files — `package.json`, `tsconfig.json`, GitHub Actions workflows, `pyproject.toml`, and many more.

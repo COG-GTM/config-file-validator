@@ -28,7 +28,7 @@ func JSONSchemaValidateWithPositions(schemaURL string, docJSON []byte, posMap ma
 }
 
 func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
-	schemaLoader := gojsonschema.NewReferenceLoader(schemaURL)
+	schemaLoader := newBoundedSchemaLoader(schemaURL)
 	documentLoader := gojsonschema.NewBytesLoader(docJSON)
 
 	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
