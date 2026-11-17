@@ -192,6 +192,29 @@ stdout '×'
   <!ELEMENT bold (#PCDATA)>
 ]>
 <para>Hello <bold>world</bold> today</para>
+# ============================================================
+# XSD schema location must stay inside the scanned tree
+# ============================================================
+
+# Absolute schema location is refused
+! exec validator xsd_abs_location.xml
+stdout '×'
+stdout 'must be a relative path'
+
+# Traversal out of the working directory is refused
+! exec validator sub/xsd_traversal.xml
+stdout '×'
+stdout 'must name a .xsd file inside'
+
+# Non-.xsd file is refused
+! exec validator xsd_non_xsd_location.xml
+stdout '×'
+stdout 'must reference a .xsd file'
+
+# Relative parent path that stays inside the working directory still works
+exec validator sub/xsd_parent_ok.xml
+stdout '✓'
+
 -- schema.xsd --
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -270,6 +293,34 @@ stdout '×'
 ]>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="schema.xsd">
+  <host>db.example.com</host>
+  <port>5432</port>
+</config>
+-- xsd_abs_location.xml --
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="/etc/hostname">
+  <host>db.example.com</host>
+  <port>5432</port>
+</config>
+-- sub/xsd_traversal.xml --
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="../../outside.xsd">
+  <host>db.example.com</host>
+  <port>5432</port>
+</config>
+-- xsd_non_xsd_location.xml --
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="plain.xml">
+  <host>db.example.com</host>
+  <port>5432</port>
+</config>
+-- sub/xsd_parent_ok.xml --
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="../schema.xsd">
   <host>db.example.com</host>
   <port>5432</port>
 </config>

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,7 +82,10 @@ func (XMLValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return true, ErrNoSchema
 	}
 
-	schemaPath := resolveXSDPath(schemaLoc, filePath)
+	schemaPath, err := resolveXSDPath(schemaLoc, filePath)
+	if err != nil {
+		return false, err
+	}
 	return ValidateXSD(b, schemaPath)
 }
 
@@ -145,15 +149,91 @@ func extractXSDLocation(b []byte) (string, error) {
 	}
 }
 
-func resolveXSDPath(schemaLoc, filePath string) string {
-	if filepath.IsAbs(schemaLoc) {
-		return schemaLoc
+// maxXSDSize caps the size of a schema file referenced from a document.
+const maxXSDSize = 10 << 20
+
+// resolveXSDPath maps an xsi:noNamespaceSchemaLocation value taken from an
+// untrusted document to a schema file on disk. The value must be a relative
+// path to a regular ".xsd" file that, after cleaning and resolving symlinks,
+// stays inside the working directory or the document's own directory.
+// Candidates outside those roots are rejected before they are touched.
+func resolveXSDPath(schemaLoc, filePath string) (string, error) {
+	if filepath.IsAbs(schemaLoc) || filepath.VolumeName(schemaLoc) != "" ||
+		strings.HasPrefix(schemaLoc, "/") || strings.HasPrefix(schemaLoc, `\`) ||
+		strings.Contains(schemaLoc, "://") {
+		return "", fmt.Errorf("schema location %q must be a relative path", schemaLoc)
 	}
-	if _, err := os.Stat(schemaLoc); err == nil {
-		return schemaLoc
+	if !strings.EqualFold(filepath.Ext(schemaLoc), ".xsd") {
+		return "", fmt.Errorf("schema location %q must reference a .xsd file", schemaLoc)
 	}
-	dir := filepath.Dir(filePath)
-	return filepath.Join(dir, schemaLoc)
+
+	roots := xsdRoots(filePath)
+	candidates := []string{schemaLoc, filepath.Join(filepath.Dir(filePath), schemaLoc)}
+	for _, candidate := range candidates {
+		abs, err := filepath.Abs(candidate)
+		if err != nil || !withinAny(abs, roots.abs) {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(abs)
+		if err != nil || !withinAny(real, roots.real) ||
+			!strings.EqualFold(filepath.Ext(real), ".xsd") {
+			continue
+		}
+		info, err := os.Stat(real)
+		if err != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("schema location %q is not a regular file", schemaLoc)
+		}
+		if info.Size() > maxXSDSize {
+			return "", fmt.Errorf("schema location %q exceeds the %d byte size limit", schemaLoc, maxXSDSize)
+		}
+		return real, nil
+	}
+	return "", fmt.Errorf("%w: %q must name a .xsd file inside the working directory or the XML file's directory",
+		errXSDNotFound, schemaLoc)
+}
+
+var errXSDNotFound = errors.New("schema location not found")
+
+type xsdRootSet struct {
+	abs  []string
+	real []string
+}
+
+// xsdRoots returns the directories a document-declared schema may live in:
+// the working directory and the directory of the XML file.
+func xsdRoots(filePath string) xsdRootSet {
+	var set xsdRootSet
+	dirs := []string{"."}
+	if filePath != "" {
+		dirs = append(dirs, filepath.Dir(filePath))
+	}
+	for _, dir := range dirs {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		set.abs = append(set.abs, abs)
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			set.real = append(set.real, real)
+		}
+	}
+	return set
+}
+
+func withinAny(path string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanXSDError reformats helium XSD errors from

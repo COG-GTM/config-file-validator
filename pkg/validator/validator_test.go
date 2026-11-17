@@ -685,11 +685,11 @@ func Test_XMLValidateSchemaValid(t *testing.T) {
 	xsdFile := writeTestXSD(t)
 	xml := `<?xml version="1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:noNamespaceSchemaLocation="` + xsdFile + `">
+        xsi:noNamespaceSchemaLocation="` + filepath.Base(xsdFile) + `">
   <host>db.example.com</host>
   <port>5432</port>
 </config>`
-	valid, err := XMLValidator{}.ValidateSchema([]byte(xml), "")
+	valid, err := XMLValidator{}.ValidateSchema([]byte(xml), filepath.Join(filepath.Dir(xsdFile), "doc.xml"))
 	require.True(t, valid)
 	require.NoError(t, err)
 }
@@ -699,11 +699,11 @@ func Test_XMLValidateSchemaInvalid(t *testing.T) {
 	xsdFile := writeTestXSD(t)
 	xml := `<?xml version="1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:noNamespaceSchemaLocation="` + xsdFile + `">
+        xsi:noNamespaceSchemaLocation="` + filepath.Base(xsdFile) + `">
   <host>db.example.com</host>
   <port>not_a_number</port>
 </config>`
-	valid, err := XMLValidator{}.ValidateSchema([]byte(xml), "")
+	valid, err := XMLValidator{}.ValidateSchema([]byte(xml), filepath.Join(filepath.Dir(xsdFile), "doc.xml"))
 	require.False(t, valid)
 	require.ErrorContains(t, err, "schema validation failed")
 }
