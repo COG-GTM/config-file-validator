@@ -128,6 +128,7 @@ func checkJSONCDepth(b []byte) error {
 				} else {
 					i = len(b)
 				}
+			default:
 			}
 		case '[', '{':
 			depth++
@@ -144,6 +145,7 @@ func checkJSONCDepth(b []byte) error {
 			if depth > 0 {
 				depth--
 			}
+		default:
 		}
 	}
 	return nil
