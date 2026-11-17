@@ -1,0 +1,45 @@
+# ============================================================
+# SchemaStore cache must stay inside the cache directory even
+# when an auto-discovered .cfv.toml points schemastore-path at a
+# catalog whose URLs contain ../ or %2f-encoded traversal.
+# ============================================================
+
+env XDG_CACHE_HOME=$WORK/home/cache
+
+mkcatalog project/sb plain.json /../../../../escape-plain.json
+cd project
+exec validator plain.json
+stdout '✓'
+cd $WORK
+! exists $WORK/escape-plain.json
+! exists $WORK/home/escape-plain.json
+
+mkcatalog project/sb encoded.json /..%2f..%2f..%2f..%2fescape-encoded.json
+cd project
+exec validator encoded.json
+stdout '✓'
+cd $WORK
+! exists $WORK/escape-encoded.json
+! exists $WORK/home/escape-encoded.json
+! exists $WORK/home/cache/escape-encoded.json
+
+mkcatalog project/sb dots.json /%2e%2e/%2e%2e/%2e%2e/%2e%2e/escape-dots.json
+cd project
+exec validator dots.json
+stdout '✓'
+cd $WORK
+! exists $WORK/escape-dots.json
+! exists $WORK/home/escape-dots.json
+! exists $WORK/home/cache/escape-dots.json
+
+-- project/.cfv.toml --
+schemastore-path = "sb"
+
+-- project/plain.json --
+{"key": "value"}
+
+-- project/encoded.json --
+{"key": "value"}
+
+-- project/dots.json --
+{"key": "value"}
