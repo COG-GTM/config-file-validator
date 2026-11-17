@@ -20,14 +20,21 @@ func JSONSchemaValidate(schemaURL string, docJSON []byte) (bool, error) {
 	return validateJSONSchema(schemaURL, docJSON, nil)
 }
 
+// positionLocator returns source positions for the given gojsonschema
+// context strings. It is only called when validation fails.
+type positionLocator func(contexts []string) map[string]SourcePosition
+
 // JSONSchemaValidateWithPositions validates docJSON against schemaURL and
 // annotates errors with source positions from posMap. The map keys are
 // gojsonschema context strings like "(root).name".
 func JSONSchemaValidateWithPositions(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
-	return validateJSONSchema(schemaURL, docJSON, posMap)
+	if posMap == nil {
+		return validateJSONSchema(schemaURL, docJSON, nil)
+	}
+	return validateJSONSchema(schemaURL, docJSON, func([]string) map[string]SourcePosition { return posMap })
 }
 
-func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]SourcePosition) (bool, error) {
+func validateJSONSchema(schemaURL string, docJSON []byte, locate positionLocator) (bool, error) {
 	schemaLoader := gojsonschema.NewReferenceLoader(schemaURL)
 	documentLoader := gojsonschema.NewBytesLoader(docJSON)
 
@@ -37,15 +44,22 @@ func validateJSONSchema(schemaURL string, docJSON []byte, posMap map[string]Sour
 	}
 
 	if !result.Valid() {
+		resultErrs := result.Errors()
+		contexts := make([]string, len(resultErrs))
+		for i, desc := range resultErrs {
+			contexts[i] = desc.Context().String()
+		}
+		var posMap map[string]SourcePosition
+		if locate != nil {
+			posMap = locate(contexts)
+		}
 		var errs []string
 		var positions []SchemaErrorPosition
-		for _, desc := range result.Errors() {
+		for i, desc := range resultErrs {
 			errs = append(errs, desc.String())
 			var pos SchemaErrorPosition
-			if posMap != nil {
-				if sp, ok := posMap[desc.Context().String()]; ok {
-					pos = SchemaErrorPosition(sp)
-				}
+			if sp, ok := posMap[contexts[i]]; ok {
+				pos = SchemaErrorPosition(sp)
 			}
 			positions = append(positions, pos)
 		}
