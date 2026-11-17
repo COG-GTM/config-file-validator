@@ -1,9 +1,12 @@
 package validator
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
+	"sort"
 	"strings"
 )
 
@@ -86,8 +89,9 @@ func (JSONValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return false, err
 	}
 
-	posMap := buildJSONPositionMap(b)
-	return JSONSchemaValidateWithPositions(schemaURL, cleanDoc, posMap)
+	return validateJSONSchema(schemaURL, cleanDoc, func(contexts []string) map[string]SourcePosition {
+		return buildJSONPositionMap(b, contexts)
+	})
 }
 
 // checkJSONDuplicateKeys walks the JSON token stream and reports duplicate keys.
@@ -96,21 +100,39 @@ func checkJSONDuplicateKeys(b []byte) error {
 	return checkDuplicateKeysInDecoder(dec)
 }
 
-// buildJSONPositionMap scans JSON bytes and builds a map from gojsonschema
-// context paths (e.g. "(root).name") to their source position.
-func buildJSONPositionMap(b []byte) map[string]SourcePosition {
-	positions := make(map[string]SourcePosition)
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+// buildJSONPositionMap scans JSON bytes and returns the source position of
+// each gojsonschema context path in wanted (e.g. "(root).name") that occurs
+// in the document. It runs in time linear in len(b) and memory proportional
+// to len(b) plus len(wanted): paths are tracked as incremental seeded hashes
+// and only resolved to line and column when they match a wanted path.
+func buildJSONPositionMap(b []byte, wanted []string) map[string]SourcePosition {
+	positions := make(map[string]SourcePosition, len(wanted))
+	if len(wanted) == 0 {
+		return positions
+	}
+
+	seed := maphash.MakeSeed()
+	wantedByHash := make(map[uint64]string, len(wanted))
+	for _, w := range wanted {
+		wantedByHash[maphash.String(seed, w)] = w
+	}
+
+	var newlines []int
+	for i, c := range b {
+		if c == '\n' {
+			newlines = append(newlines, i)
+		}
+	}
 
 	offsetToPos := func(offset int64) SourcePosition {
-		if int(offset) > len(b) {
-			offset = int64(len(b))
+		off := min(int(offset), len(b))
+		// Number of newlines strictly before off.
+		n := sort.SearchInts(newlines, off)
+		lastNL := -1
+		if n > 0 {
+			lastNL = newlines[n-1]
 		}
-		prefix := b[:offset]
-		line := 1 + strings.Count(string(prefix), "\n")
-		lastNL := strings.LastIndex(string(prefix), "\n")
-		col := int(offset) - lastNL
-		return SourcePosition{Line: line, Column: col}
+		return SourcePosition{Line: 1 + n, Column: off - lastNL}
 	}
 
 	findKeyStart := func(endOffset int64) SourcePosition {
@@ -126,26 +148,36 @@ func buildJSONPositionMap(b []byte) map[string]SourcePosition {
 		return offsetToPos(endOffset)
 	}
 
+	// Each frame stores the hash of its own path, so a child path costs only
+	// the length of its key instead of the length of the full path.
 	type frame struct {
 		isArray bool
-		key     string
+		path    maphash.Hash
 	}
+
+	var root maphash.Hash
+	root.SetSeed(seed)
+	root.WriteString("(root)")
 
 	var stack []frame
 	var pendingKey string
 	expectingKey := false
 
-	pathStr := func() string {
-		parts := []string{"(root)"}
-		for _, f := range stack {
-			if f.key != "" {
-				parts = append(parts, f.key)
-			}
+	childPath := func(key string) maphash.Hash {
+		h := root
+		if len(stack) > 0 {
+			h = stack[len(stack)-1].path
 		}
-		if pendingKey != "" {
-			parts = append(parts, pendingKey)
+		if key != "" {
+			h.WriteString(".")
+			h.WriteString(key)
 		}
-		return strings.Join(parts, ".")
+		return h
+	}
+
+	match := func(h *maphash.Hash) (string, bool) {
+		p, ok := wantedByHash[h.Sum64()]
+		return p, ok
 	}
 
 	recordAndReset := func() {
@@ -153,6 +185,7 @@ func buildJSONPositionMap(b []byte) map[string]SourcePosition {
 		expectingKey = len(stack) > 0 && !stack[len(stack)-1].isArray
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(b))
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -164,15 +197,17 @@ func buildJSONPositionMap(b []byte) map[string]SourcePosition {
 		case json.Delim:
 			switch v {
 			case '{':
-				stack = append(stack, frame{isArray: false, key: pendingKey})
+				h := childPath(pendingKey)
+				stack = append(stack, frame{isArray: false, path: h})
 				pendingKey = ""
 				expectingKey = true
-				p := pathStr()
-				if _, exists := positions[p]; !exists {
-					positions[p] = offsetToPos(afterOffset - 1)
+				if p, ok := match(&h); ok {
+					if _, exists := positions[p]; !exists {
+						positions[p] = offsetToPos(afterOffset - 1)
+					}
 				}
 			case '[':
-				stack = append(stack, frame{isArray: true, key: pendingKey})
+				stack = append(stack, frame{isArray: true, path: childPath(pendingKey)})
 				pendingKey = ""
 			case '}', ']':
 				if len(stack) > 0 {
@@ -184,7 +219,10 @@ func buildJSONPositionMap(b []byte) map[string]SourcePosition {
 		case string:
 			if expectingKey && len(stack) > 0 && !stack[len(stack)-1].isArray {
 				pendingKey = v
-				positions[pathStr()] = findKeyStart(afterOffset)
+				h := childPath(v)
+				if p, ok := match(&h); ok {
+					positions[p] = findKeyStart(afterOffset)
+				}
 				expectingKey = false
 			} else {
 				recordAndReset()

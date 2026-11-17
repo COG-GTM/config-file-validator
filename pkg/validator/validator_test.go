@@ -1100,29 +1100,38 @@ func Test_ININoDuplicatesPasses(t *testing.T) {
 func Test_buildJSONPositionMap(t *testing.T) {
 	t.Parallel()
 	doc := []byte("{\n  \"name\": \"app\",\n  \"port\": 8080,\n  \"nested\": {\n    \"key\": \"val\"\n  }\n}")
-	positions := buildJSONPositionMap(doc)
+	positions := buildJSONPositionMap(doc, []string{
+		"(root)", "(root).name", "(root).port", "(root).nested", "(root).nested.key", "(root).missing",
+	})
 
+	require.Len(t, positions, 5)
 	require.Contains(t, positions, "(root)")
 	require.Contains(t, positions, "(root).name")
 	require.Contains(t, positions, "(root).port")
 	require.Contains(t, positions, "(root).nested")
 	require.Contains(t, positions, "(root).nested.key")
 
-	require.Equal(t, 2, positions["(root).name"].Line)
+	require.Equal(t, SourcePosition{Line: 1, Column: 1}, positions["(root)"])
+	require.Equal(t, SourcePosition{Line: 2, Column: 3}, positions["(root).name"])
 	require.Equal(t, 4, positions["(root).nested"].Line)
-	require.Equal(t, 5, positions["(root).nested.key"].Line)
+	require.Equal(t, SourcePosition{Line: 5, Column: 5}, positions["(root).nested.key"])
+}
+
+func Test_buildJSONPositionMapNoWanted(t *testing.T) {
+	t.Parallel()
+	require.Empty(t, buildJSONPositionMap([]byte(`{"name": "app"}`), nil))
 }
 
 func Test_buildJSONPositionMapArray(t *testing.T) {
 	t.Parallel()
 	doc := []byte(`{"items": [1, 2, 3]}`)
-	positions := buildJSONPositionMap(doc)
+	positions := buildJSONPositionMap(doc, []string{"(root).items"})
 	require.Contains(t, positions, "(root).items")
 }
 
 func Test_buildJSONPositionMapEmpty(t *testing.T) {
 	t.Parallel()
-	positions := buildJSONPositionMap([]byte(`{}`))
+	positions := buildJSONPositionMap([]byte(`{}`), []string{"(root)"})
 	require.Contains(t, positions, "(root)")
 }
 
