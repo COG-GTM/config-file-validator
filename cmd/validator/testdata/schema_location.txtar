@@ -1,0 +1,55 @@
+# ============================================================
+# File-declared schema locations are restricted to https URLs
+# and local files inside the scan root (no network needed)
+# ============================================================
+
+cd repo
+
+# Local schema inside the scan root still works
+exec validator ok
+stdout '✓'
+
+# Non-https scheme is rejected
+! exec validator http
+stdout 'schema location not allowed'
+
+# file:// URL outside the scan root is rejected
+! exec validator fileurl
+stdout 'schema location not allowed'
+
+# Absolute path outside the scan root is rejected
+! exec validator abs
+stdout 'schema location not allowed'
+
+# ../ escape out of the scan root is rejected
+! exec validator traversal
+stdout 'schema location not allowed'
+
+# YAML modeline is subject to the same rules
+! exec validator yaml
+stdout 'schema location not allowed'
+
+-- outside.json --
+{"type":"object","properties":{"port":{"enum":["secret-value"]}}}
+
+-- repo/schemas/s.schema.json --
+{"type":"object","properties":{"port":{"type":"integer"}}}
+
+-- repo/ok/config.json --
+{"$schema":"../schemas/s.schema.json","port":1}
+
+-- repo/http/config.json --
+{"$schema":"http://127.0.0.1:9/x","port":1}
+
+-- repo/fileurl/config.json --
+{"$schema":"file:///etc/hostname","port":1}
+
+-- repo/abs/config.json --
+{"$schema":"/etc/hostname","port":1}
+
+-- repo/traversal/config.json --
+{"$schema":"../../outside.json","port":1}
+
+-- repo/yaml/config.yaml --
+# yaml-language-server: $schema=../../outside.json
+port: 1

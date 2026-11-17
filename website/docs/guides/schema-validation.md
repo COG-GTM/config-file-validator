@@ -92,6 +92,13 @@ Schema references can be:
 - **URLs** — `https://json.schemastore.org/package.json`
 - **Local file paths** — absolute or relative. Relative paths are resolved from the directory containing the config file being validated.
 
+Because the file being validated chooses its own schema, schema references declared in JSON, JSONC, YAML, TOML and TOON files (and any `$ref` inside those schemas) are restricted:
+
+- Remote schemas must use `https` and must not resolve to loopback, private, link-local or other non-public addresses, including after redirects.
+- Local schemas must be existing files inside the current working directory, a search path passed to the validator, or the directory of the file being validated, after symlinks are resolved.
+
+Any other location fails with `schema location not allowed`. Schemas passed with `--schema-map` or found through `--schemastore` are chosen by you, not by the file, and are not restricted.
+
 ## SchemaStore integration
 
 [SchemaStore](https://www.schemastore.org/) is a community-maintained catalog of JSON Schemas for hundreds of common config files — `package.json`, `tsconfig.json`, GitHub Actions workflows, `pyproject.toml`, and many more.

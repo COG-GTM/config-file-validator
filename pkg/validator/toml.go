@@ -10,7 +10,10 @@ import (
 
 type TomlValidator struct{}
 
-var _ Validator = TomlValidator{}
+var (
+	_ Validator             = TomlValidator{}
+	_ PolicySchemaValidator = TomlValidator{}
+)
 
 func (TomlValidator) ValidateSyntax(b []byte) (bool, error) {
 	var output any
@@ -39,7 +42,13 @@ func (TomlValidator) MarshalToJSON(b []byte) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-func (TomlValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+func (v TomlValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	return v.ValidateSchemaWithPolicy(b, filePath, SchemaPolicy{})
+}
+
+// ValidateSchemaWithPolicy is ValidateSchema with the schema locations the
+// file may declare restricted by policy.
+func (TomlValidator) ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error) {
 	var doc map[string]any
 	if err := toml.Unmarshal(b, &doc); err != nil {
 		return false, err
@@ -64,5 +73,5 @@ func (TomlValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return false, err
 	}
 
-	return JSONSchemaValidate(resolveSchemaURL(schemaURL, filePath), docJSON)
+	return validateDeclaredSchema(schemaURL, filePath, policy, docJSON, nil)
 }

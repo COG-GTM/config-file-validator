@@ -11,7 +11,10 @@ import (
 
 type JSONCValidator struct{}
 
-var _ Validator = JSONCValidator{}
+var (
+	_ Validator             = JSONCValidator{}
+	_ PolicySchemaValidator = JSONCValidator{}
+)
 
 func (JSONCValidator) ValidateSyntax(b []byte) (bool, error) {
 	_, err := hujson.Parse(b)
@@ -45,7 +48,13 @@ func (JSONCValidator) MarshalToJSON(b []byte) ([]byte, error) {
 	return standardized, nil
 }
 
-func (JSONCValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+func (v JSONCValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
+	return v.ValidateSchemaWithPolicy(b, filePath, SchemaPolicy{})
+}
+
+// ValidateSchemaWithPolicy is ValidateSchema with the schema locations the
+// file may declare restricted by policy.
+func (JSONCValidator) ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error) {
 	standardized, err := hujson.Standardize(b)
 	if err != nil {
 		return false, err
@@ -74,15 +83,13 @@ func (JSONCValidator) ValidateSchema(b []byte, filePath string) (bool, error) {
 		return false, errors.New("$schema must not be empty")
 	}
 
-	schemaURL = resolveSchemaURL(schemaURL, filePath)
-
 	delete(doc, "$schema")
 	cleanDoc, err := json.Marshal(doc)
 	if err != nil {
 		return false, err
 	}
 
-	return JSONSchemaValidate(schemaURL, cleanDoc)
+	return validateDeclaredSchema(schemaURL, filePath, policy, cleanDoc, nil)
 }
 
 // parseHujsonError extracts line and column from hujson error messages.

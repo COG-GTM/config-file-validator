@@ -60,6 +60,14 @@ type SchemaValidator interface {
 	ValidateSchema(b []byte, filePath string) (bool, error)
 }
 
+// PolicySchemaValidator is an optional interface for SchemaValidators whose
+// documents can declare their own schema location. The policy limits which
+// locations such a declaration may point to; see SchemaPolicy.
+type PolicySchemaValidator interface {
+	SchemaValidator
+	ValidateSchemaWithPolicy(b []byte, filePath string, policy SchemaPolicy) (bool, error)
+}
+
 // JSONMarshaler is an optional interface for validators whose content can be
 // converted to JSON for schema validation. This is used when an external
 // schema (e.g. from SchemaStore or --schema-map) is applied to a file that

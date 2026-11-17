@@ -29,6 +29,7 @@ type CLI struct {
 	noSchema      bool
 	schemaMap     map[string]string
 	schemaStore   *schemastore.Store
+	schemaPolicy  validator.SchemaPolicy
 	stdinData     []byte
 	stdinFileType filetype.FileType
 	errorFound    bool
@@ -76,6 +77,14 @@ func WithNoSchema(noSchema bool) Option {
 func WithSchemaMap(m map[string]string) Option {
 	return func(c *CLI) {
 		c.schemaMap = m
+	}
+}
+
+// WithSchemaRoots sets the directories that a schema declared inside a
+// validated file (e.g. "$schema") may reference local files from.
+func WithSchemaRoots(roots ...string) Option {
+	return func(c *CLI) {
+		c.schemaPolicy.Roots = roots
 	}
 }
 
@@ -286,7 +295,13 @@ func (c *CLI) validateSchema(v validator.Validator, content []byte, filePath str
 
 	sv, hasSV := v.(validator.SchemaValidator)
 	if hasSV {
-		valid, err := sv.ValidateSchema(content, filePath)
+		var valid bool
+		var err error
+		if psv, ok := v.(validator.PolicySchemaValidator); ok {
+			valid, err = psv.ValidateSchemaWithPolicy(content, filePath, c.schemaPolicy)
+		} else {
+			valid, err = sv.ValidateSchema(content, filePath)
+		}
 		if !errors.Is(err, validator.ErrNoSchema) {
 			return valid, nil, err
 		}
