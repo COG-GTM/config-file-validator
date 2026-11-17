@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/Boeing/config-file-validator/v2/pkg/tools"
 )
@@ -1126,39 +1128,87 @@ func Test_buildJSONPositionMapEmpty(t *testing.T) {
 	require.Contains(t, positions, "(root)")
 }
 
-func Test_buildYAMLPositionMap(t *testing.T) {
+// yamlPositionAt resolves a dotted gojsonschema context path (e.g. "(root).a.b")
+// against doc using the lazy YAML position lookup.
+func yamlPositionAt(t *testing.T, doc []byte, path string) (SourcePosition, bool) {
+	t.Helper()
+	var ctx *gojsonschema.JsonContext
+	for _, seg := range strings.Split(path, ".") {
+		ctx = gojsonschema.NewJsonContext(seg, ctx)
+	}
+	return newYAMLPositionLookup(doc)(ctx)
+}
+
+func Test_YAMLPositionLookup(t *testing.T) {
 	t.Parallel()
 	doc := []byte("name: app\nserver:\n  host: example.local\n  port: 8080\n")
-	positions := buildYAMLPositionMap(doc)
 
-	require.Contains(t, positions, "(root)")
-	require.Contains(t, positions, "(root).name")
-	require.Contains(t, positions, "(root).server")
-	require.Contains(t, positions, "(root).server.host")
-	require.Contains(t, positions, "(root).server.port")
+	for _, p := range []string{"(root)", "(root).name", "(root).server", "(root).server.host", "(root).server.port"} {
+		_, ok := yamlPositionAt(t, doc, p)
+		require.Truef(t, ok, "expected position for %s", p)
+	}
 
-	require.Equal(t, 1, positions["(root).name"].Line)
-	require.Equal(t, 3, positions["(root).server.host"].Line)
-	require.Equal(t, 4, positions["(root).server.port"].Line)
+	pos, _ := yamlPositionAt(t, doc, "(root).name")
+	require.Equal(t, 1, pos.Line)
+	pos, _ = yamlPositionAt(t, doc, "(root).server.host")
+	require.Equal(t, 3, pos.Line)
+	pos, _ = yamlPositionAt(t, doc, "(root).server.port")
+	require.Equal(t, 4, pos.Line)
+
+	_, ok := yamlPositionAt(t, doc, "(root).server.missing")
+	require.False(t, ok)
+	_, ok = yamlPositionAt(t, doc, "(root).name.child")
+	require.False(t, ok)
 }
 
-func Test_buildYAMLPositionMapSequence(t *testing.T) {
+func Test_YAMLPositionLookupSequence(t *testing.T) {
 	t.Parallel()
 	doc := []byte("items:\n  - one\n  - two\n  - three\n")
-	positions := buildYAMLPositionMap(doc)
 
-	require.Contains(t, positions, "(root).items")
-	require.Contains(t, positions, "(root).items.0")
-	require.Contains(t, positions, "(root).items.1")
-	require.Contains(t, positions, "(root).items.2")
-	require.Equal(t, 2, positions["(root).items.0"].Line)
-	require.Equal(t, 4, positions["(root).items.2"].Line)
+	for _, p := range []string{"(root).items", "(root).items.0", "(root).items.1", "(root).items.2"} {
+		_, ok := yamlPositionAt(t, doc, p)
+		require.Truef(t, ok, "expected position for %s", p)
+	}
+	pos, _ := yamlPositionAt(t, doc, "(root).items.0")
+	require.Equal(t, 2, pos.Line)
+	pos, _ = yamlPositionAt(t, doc, "(root).items.2")
+	require.Equal(t, 4, pos.Line)
+
+	for _, p := range []string{"(root).items.3", "(root).items.-1", "(root).items.x"} {
+		_, ok := yamlPositionAt(t, doc, p)
+		require.Falsef(t, ok, "unexpected position for %s", p)
+	}
 }
 
-func Test_buildYAMLPositionMapInvalidYAML(t *testing.T) {
+func Test_YAMLPositionLookupDottedKey(t *testing.T) {
 	t.Parallel()
-	positions := buildYAMLPositionMap([]byte("a: b\nc: d:::::::::::::::"))
-	require.Nil(t, positions)
+	doc := []byte("a.b: 1\na:\n  b: 2\n")
+	ctx := gojsonschema.NewJsonContext("a.b", gojsonschema.NewJsonContext("(root)", nil))
+	pos, ok := newYAMLPositionLookup(doc)(ctx)
+	require.True(t, ok)
+	require.Equal(t, 1, pos.Line)
+
+	pos, ok = yamlPositionAt(t, doc, "(root).a.b")
+	require.True(t, ok)
+	require.Equal(t, 3, pos.Line)
+}
+
+func Test_YAMLPositionLookupInvalidYAML(t *testing.T) {
+	t.Parallel()
+	_, ok := yamlPositionAt(t, []byte("a: b\nc: d:::::::::::::::"), "(root)")
+	require.False(t, ok)
+}
+
+func Test_YAMLPositionLookupScalarRoot(t *testing.T) {
+	t.Parallel()
+	_, ok := yamlPositionAt(t, []byte("just a string\n"), "(root)")
+	require.False(t, ok)
+
+	lookup := newYAMLPositionLookup([]byte("a: 1\n"))
+	_, ok = lookup(nil)
+	require.False(t, ok)
+	_, ok = lookup(gojsonschema.NewJsonContext("other", nil))
+	require.False(t, ok)
 }
 
 func Test_JSONSchemaErrorPositions(t *testing.T) {
