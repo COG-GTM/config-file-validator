@@ -1,0 +1,15 @@
+# Symlinks that resolve outside the search path are reported but never read
+[!unix] skip 'symlinks required'
+symlink repo/leak.ini -> ../outside/secret.ini
+symlink repo/probe.ini -> ../outside/missing.ini
+symlink repo/inside.json -> good.json
+
+! exec validator repo
+stdout 'symlink not followed: target is missing or outside the search path'
+! stdout 's3cr3t-token'
+stdout 'inside.json'
+
+-- outside/secret.ini --
+machine registry.example.com login build password s3cr3t-token
+-- repo/good.json --
+{"key": "value"}

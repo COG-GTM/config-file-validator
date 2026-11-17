@@ -32,6 +32,9 @@ type FileSystemFinder struct {
 	TypeOverrides    []TypeOverride
 	Gitignore        bool
 	IgnoreFiles      []string
+	// walkRoot is the search root currently being walked; symlinks are only
+	// followed when their target resolves inside it.
+	walkRoot string
 }
 
 type FSFinderOptions func(*FileSystemFinder)
@@ -142,7 +145,7 @@ func (fsf FileSystemFinder) MatchFile(path string) ([]FileMetadata, error) {
 	finder.extCache = make(map[string]struct{})
 
 	path = strings.TrimSpace(path)
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +184,7 @@ func (fsf *FileSystemFinder) matchFileInRoot(
 	if err != nil {
 		return err
 	}
+	fsf.walkRoot = rootAbs
 	rootInfo, err := os.Stat(rootAbs)
 	if err != nil {
 		return err
@@ -316,6 +320,7 @@ func (fsf *FileSystemFinder) findOne(pathRoot string, seenMap map[string]struct{
 	}
 
 	maxDepth := strings.Count(pathRoot, string(os.PathSeparator)) + depth
+	fsf.walkRoot = pathRoot
 
 	err := filepath.WalkDir(pathRoot,
 		func(path string, dirEntry fs.DirEntry, err error) error {
@@ -556,16 +561,60 @@ func (fsf *FileSystemFinder) isFileTypeExcluded(fileType filetype.FileType) bool
 	return false
 }
 
-func (*FileSystemFinder) addFile(path string, dirEntry fs.DirEntry, fileType filetype.FileType, seenMap map[string]struct{}, matchingFiles *[]FileMetadata) error {
+func (fsf *FileSystemFinder) addFile(path string, dirEntry fs.DirEntry, fileType filetype.FileType, seenMap map[string]struct{}, matchingFiles *[]FileMetadata) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
 
-	if _, seen := seenMap[absPath]; !seen {
-		*matchingFiles = append(*matchingFiles, FileMetadata{dirEntry.Name(), absPath, fileType})
-		seenMap[absPath] = struct{}{}
+	if _, seen := seenMap[absPath]; seen {
+		return nil
 	}
 
+	var readErr error
+	switch mode := dirEntry.Type(); {
+	case mode&fs.ModeSymlink != 0:
+		follow, err := symlinkTargetInRoot(absPath, fsf.walkRoot)
+		if err != nil {
+			readErr = err
+		} else if !follow {
+			return nil
+		}
+	case !mode.IsRegular():
+		return nil
+	}
+
+	*matchingFiles = append(*matchingFiles, FileMetadata{
+		Name:      dirEntry.Name(),
+		Path:      absPath,
+		FileType:  fileType,
+		ReadError: readErr,
+	})
+	seenMap[absPath] = struct{}{}
+
 	return nil
+}
+
+// symlinkTargetInRoot resolves the symlink at linkAbs. It returns
+// ErrSymlinkNotFollowed when the target is missing or resolves outside root,
+// false when the target is inside root but not a regular file, and true when
+// the link may be read.
+func symlinkTargetInRoot(linkAbs, root string) (bool, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false, ErrSymlinkNotFollowed
+	}
+	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return false, ErrSymlinkNotFollowed
+	}
+	target, err := filepath.EvalSymlinks(linkAbs)
+	if err != nil || !containsPath(rootReal, target) {
+		return false, ErrSymlinkNotFollowed
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return false, ErrSymlinkNotFollowed
+	}
+	return info.Mode().IsRegular(), nil
 }

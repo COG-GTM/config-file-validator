@@ -811,3 +811,63 @@ func Test_fsFinderExtensionCacheNoPoison(t *testing.T) {
 	require.Contains(t, names, "good.json")
 	require.Len(t, names, 2, "LICENSE should not be found (unrecognized)")
 }
+
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+}
+
+func Test_fsFinderSymlinkContainment(t *testing.T) {
+	outside := t.TempDir()
+	secret := testhelper.WriteFile(t, outside, "secret.ini", "token\n")
+
+	root := t.TempDir()
+	good := testhelper.WriteFile(t, root, "good.json", testhelper.ValidContent["json"])
+	testhelper.CreateSubdir(t, root, "dir.json")
+	symlinkOrSkip(t, secret, filepath.Join(root, "leak.ini"))
+	symlinkOrSkip(t, filepath.Join(outside, "missing.ini"), filepath.Join(root, "missing.ini"))
+	symlinkOrSkip(t, outside, filepath.Join(root, "outdir"))
+	symlinkOrSkip(t, filepath.Join("outdir", "secret.ini"), filepath.Join(root, "viadir.ini"))
+	symlinkOrSkip(t, good, filepath.Join(root, "inside.json"))
+	symlinkOrSkip(t, filepath.Join(root, "dir.json"), filepath.Join(root, "linkdir.json"))
+
+	files, err := FileSystemFinderInit(WithPathRoots(root)).Find()
+	require.NoError(t, err)
+
+	byName := map[string]FileMetadata{}
+	for _, f := range files {
+		byName[f.Name] = f
+	}
+	require.ElementsMatch(t,
+		[]string{"good.json", "inside.json", "leak.ini", "missing.ini", "viadir.ini"},
+		fileNames(files))
+	require.NoError(t, byName["good.json"].ReadError)
+	require.NoError(t, byName["inside.json"].ReadError)
+	require.ErrorIs(t, byName["leak.ini"].ReadError, ErrSymlinkNotFollowed)
+	require.ErrorIs(t, byName["missing.ini"].ReadError, ErrSymlinkNotFollowed)
+	require.ErrorIs(t, byName["viadir.ini"].ReadError, ErrSymlinkNotFollowed)
+
+	matches, err := FileSystemFinderInit(WithPathRoots(root)).MatchFile(filepath.Join(root, "leak.ini"))
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	require.ErrorIs(t, matches[0].ReadError, ErrSymlinkNotFollowed)
+
+	matches, err = FileSystemFinderInit(WithPathRoots(root)).MatchFile(filepath.Join(root, "inside.json"))
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	require.NoError(t, matches[0].ReadError)
+}
+
+func Test_fsFinderSymlinkRootIsFollowed(t *testing.T) {
+	outside := t.TempDir()
+	target := testhelper.WriteFile(t, outside, "good.json", testhelper.ValidContent["json"])
+	link := filepath.Join(t.TempDir(), "link.json")
+	symlinkOrSkip(t, target, link)
+
+	files, err := FileSystemFinderInit(WithPathRoots(link)).Find()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.NoError(t, files[0].ReadError)
+}

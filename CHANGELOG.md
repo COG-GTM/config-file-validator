@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Symlinks are only followed when their target resolves to a regular file inside the search path; links that escape it or are broken are reported as "symlink not followed" without reading the target, so a scanned tree can no longer make the validator read and echo files outside it (e.g. CI credentials). Files are now read with a 64 MiB limit and non-regular files (devices, FIFOs) are rejected, so a link to `/dev/zero` no longer exhausts memory
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).

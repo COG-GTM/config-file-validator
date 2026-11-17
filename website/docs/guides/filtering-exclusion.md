@@ -55,6 +55,10 @@ In `.cfv.toml`:
 file-types = ["json", "yaml", "toml"]
 ```
 
+## Symbolic links
+
+Symlinks are validated only when they resolve to a regular file inside the search path. A link whose target is missing or outside the search path is reported as `symlink not followed: target is missing or outside the search path` and its target is never read. Directory symlinks are not descended into. Passing a symlink directly as the search path follows it.
+
 ## Recursion depth
 
 By default, the validator recurses without limit. Use `--depth` to restrict how deep it goes:
