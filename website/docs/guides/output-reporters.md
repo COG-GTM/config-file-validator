@@ -59,6 +59,8 @@ In `.cfv.toml`:
 reporter = ["standard", "json:output.json"]
 ```
 
+Output paths in `.cfv.toml` must be relative and stay inside the directory that holds the config file. Absolute paths, `..` traversal and symlinks that point outside that directory are rejected. Use `--reporter` on the command line to write a report elsewhere.
+
 ## Grouping output
 
 :::note

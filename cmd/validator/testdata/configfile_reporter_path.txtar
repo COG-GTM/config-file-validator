@@ -1,0 +1,132 @@
+# ============================================================
+# Reporter output paths from .cfv.toml must stay inside the
+# directory holding the config file
+# ============================================================
+
+# Discovered config cannot write outside the project via ..
+cd project
+! exec validator good.json
+stderr 'resolves outside the config file directory'
+! exists ../outside.txt
+cd ..
+
+# Explicit --config cannot write outside its directory either
+! exec validator --config=project/.cfv.toml project/good.json
+stderr 'resolves outside the config file directory'
+! exists outside.txt
+
+# Absolute output paths are rejected
+! exec validator --config=cfv/absolute.toml project/good.json
+stderr 'must be relative to the config file directory'
+
+# Unknown reporter types in the config file are rejected
+! exec validator --config=cfv/badtype.toml project/good.json
+stderr 'only supports standard, json, junit, sarif, or github'
+
+# A symlink inside the project cannot redirect the output outside
+[!symlink] skip 'symlinks not supported'
+cd linked
+symlink out.txt -> ../victim.txt
+! exec validator good.json
+stderr 'resolves outside the config file directory'
+cmp ../victim.txt ../victim.orig
+cd ..
+
+# A symlinked directory followed by .. is resolved like the OS does
+cd linkdir
+mkdir ../elsewhere/deep
+symlink link -> ../elsewhere/deep
+! exec validator good.json
+stderr 'resolves outside the config file directory'
+! exists ../elsewhere/victim.txt
+cd ..
+
+# .. after a missing directory cannot reach an existing external symlink
+cd missingdir
+symlink out.txt -> ../elsewhere/victim2.txt
+! exec validator good.json
+stderr 'cannot resolve'
+! exists ../elsewhere/victim2.txt
+cd ..
+
+# Directory output whose default result file is a symlink outside
+cd dirout
+symlink result.txt -> ../victim.txt
+! exec validator good.json
+stderr 'resolves outside the config file directory'
+cmp ../victim.txt ../victim.orig
+cd ..
+
+# Dangling symlinks are rejected as well
+cd dangling
+symlink out.txt -> ../created.txt
+! exec validator good.json
+stderr 'cannot resolve'
+! exists ../created.txt
+cd ..
+
+# Paths inside the project still work, including from a subdirectory
+cd inside/sub
+exec validator ../good.json
+exists report.json
+cd ../..
+
+# CLI --reporter is unaffected by the config restriction
+cd project
+exec validator --reporter=json:../cli.json good.json
+exists ../cli.json
+
+-- project/.cfv.toml --
+reporter = ["standard:../outside.txt"]
+
+-- project/good.json --
+{"key": "value"}
+
+-- cfv/absolute.toml --
+reporter = ["standard:/tmp/cfv-absolute-output.txt"]
+
+-- cfv/badtype.toml --
+reporter = ["bogus:report.txt"]
+
+-- linked/.cfv.toml --
+reporter = ["standard:out.txt"]
+
+-- linked/good.json --
+{"key": "value"}
+
+-- linkdir/.cfv.toml --
+reporter = ["standard:link/../victim.txt"]
+
+-- linkdir/good.json --
+{"key": "value"}
+
+-- missingdir/.cfv.toml --
+reporter = ["standard:missing/../out.txt"]
+
+-- missingdir/good.json --
+{"key": "value"}
+
+-- dirout/.cfv.toml --
+reporter = ["standard:."]
+
+-- dirout/good.json --
+{"key": "value"}
+
+-- dangling/.cfv.toml --
+reporter = ["standard:out.txt"]
+
+-- dangling/good.json --
+{"key": "value"}
+
+-- inside/.cfv.toml --
+reporter = ["json:report.json"]
+
+-- inside/good.json --
+{"key": "value"}
+
+-- inside/sub/placeholder.txt --
+
+-- victim.txt --
+original
+-- victim.orig --
+original

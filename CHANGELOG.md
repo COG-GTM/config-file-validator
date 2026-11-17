@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `reporter` entries from `.cfv.toml` are now checked with the same reporter type validation as `--reporter`, and their output paths must be relative and resolve (after symlinks) inside the directory holding the config file, so an untrusted project config can no longer create or overwrite files elsewhere.
+- The standard reporter escapes control characters (newlines, terminal escapes) in file paths so crafted file names cannot inject lines into the report.
 - XML files without a DOCTYPE declaration are validated as syntax-only again; `ValidateSyntax` now enables DTD validation only when a DOCTYPE is present, restoring compatibility after upgrading `helium` to v0.5.1's stricter "DTD required" semantics (closes #546)
 - Local JSON Schema paths are encoded as file URLs on Windows (closes #550)
 - Update Go and npm dependencies to resolve 22 known vulnerabilities (CVE-2026-25680, CVE-2026-48779, and others).

@@ -1060,6 +1060,12 @@ func applyConfigFile(cfg *validatorConfig) (*configfile.ValidatorOptions, error)
 		if err != nil {
 			return nil, fmt.Errorf("config file reporter: %w", err)
 		}
+		if err := validateReporterConf(conf, nil); err != nil {
+			return nil, fmt.Errorf("config file reporter: %w", err)
+		}
+		if err := validateConfigFileReporterOutputs(conf, cfgPath); err != nil {
+			return nil, fmt.Errorf("config file reporter: %w", err)
+		}
 		cfg.reportType = conf
 	}
 	if !isFlagSet("groupby") && len(fileCfg.GroupBy) > 0 {
@@ -1102,6 +1108,111 @@ func applyConfigFile(cfg *validatorConfig) (*configfile.ValidatorOptions, error)
 	}
 
 	return &fileCfg.Validators, nil
+}
+
+// validateConfigFileReporterOutputs rejects reporter output paths from a
+// config file that are absolute or resolve, after following symlinks,
+// outside the directory holding the config file. Accepted paths are
+// replaced with their resolved form so the reporter writes exactly the
+// path that was checked.
+func validateConfigFileReporterOutputs(conf []reporterConfig, cfgPath string) error {
+	cfgDir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		return err
+	}
+	cfgDir, err = filepath.EvalSymlinks(cfgDir)
+	if err != nil {
+		return err
+	}
+	cwd, err := filepath.Abs(".")
+	if err != nil {
+		return err
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return err
+	}
+
+	for i := range conf {
+		raw := conf[i].outputDest
+		if raw == "" {
+			continue
+		}
+		if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
+			return fmt.Errorf("output path %q must be relative to the config file directory", raw)
+		}
+		dest, err := resolveOutputPath(cfgDir, cwd, raw)
+		if err != nil {
+			return fmt.Errorf("output path %q: %w", raw, err)
+		}
+		if info, err := os.Stat(dest); err == nil && info.IsDir() {
+			defaultFile := filepath.Join(dest, "result."+reportFileExtension(conf[i].reportType))
+			if _, err := resolveOutputPath(cfgDir, dest, filepath.Base(defaultFile)); err != nil {
+				return fmt.Errorf("output path %q: %w", raw, err)
+			}
+		}
+		conf[i].outputDest = dest
+	}
+	return nil
+}
+
+func reportFileExtension(reportType string) string {
+	switch reportType {
+	case "json":
+		return "json"
+	case "junit":
+		return "xml"
+	case "sarif":
+		return "sarif"
+	default:
+		return "txt"
+	}
+}
+
+// resolveOutputPath resolves the relative path raw against base one element
+// at a time, following symlinks the way the OS does (a symlink is resolved
+// before a following ".."), and returns an error unless the result stays
+// inside root. base must already be absolute and free of symlinks.
+func resolveOutputPath(root, base, raw string) (string, error) {
+	current := base
+	elems := strings.FieldsFunc(raw, func(r rune) bool { return r == '/' || r == filepath.Separator })
+	for i, elem := range elems {
+		if elem == "." {
+			continue
+		}
+		if elem == ".." {
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, elem)
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			// Nothing below a missing element exists, so the rest is lexical
+			// unless it climbs back out through "..".
+			if slices.Contains(elems[i+1:], "..") {
+				return "", fmt.Errorf("cannot resolve %q: %w", next, err)
+			}
+			current = filepath.Join(append([]string{next}, elems[i+1:]...)...)
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve %q: %w", next, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", fmt.Errorf("cannot resolve %q: %w", next, err)
+			}
+			next = resolved
+		}
+		current = next
+	}
+
+	rel, err := filepath.Rel(root, current)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", errors.New("resolves outside the config file directory")
+	}
+	return current, nil
 }
 
 func applyValidatorOptions(opts *configfile.ValidatorOptions) []filetype.FileType {

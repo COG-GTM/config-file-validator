@@ -626,3 +626,23 @@ func Test_checkGroupsForPassFail(t *testing.T) {
 	require.False(t, checkGroupsForPassFail("Passed"))
 	require.False(t, checkGroupsForPassFail("xml", "Failed"))
 }
+
+func Test_stdoutReportEscapesControlCharsInFilePath(t *testing.T) {
+	reports := []Report{
+		{FilePath: "dir/evil\ntouch pwned\r\x1b[2J.json", IsValid: true},
+		{FilePath: "dir/bad\n.json", IsValid: false, ValidationErrors: []string{"oops"}},
+	}
+
+	text := createStdoutReport(reports, 1).Text
+
+	assert.Contains(t, text, `dir/evil\ntouch pwned\r\x1b[2J.json`)
+	assert.Contains(t, text, `dir/bad\n.json`)
+	assert.NotContains(t, text, "\ntouch pwned")
+	assert.NotContains(t, text, "\x1b[2J")
+}
+
+func Test_escapeControlChars(t *testing.T) {
+	assert.Equal(t, "plain/path.json", escapeControlChars("plain/path.json"))
+	assert.Equal(t, `a\tb\x00c\u0085d`, escapeControlChars("a\tb\x00c\u0085d"))
+	assert.Equal(t, "ünïcode✓", escapeControlChars("ünïcode✓"))
+}
