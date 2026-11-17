@@ -2,6 +2,8 @@ package justfile
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +74,20 @@ func TestParseRejectsOversizedInput(t *testing.T) {
 	}
 	if !strings.Contains(pe.Message, "exceeds maximum size") {
 		t.Fatalf("expected size error, got %q", pe.Message)
+	}
+}
+
+func TestParseFileRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "justfile")
+	if err := os.WriteFile(path, make([]byte, maxSourceSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseFile(path)
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.File != path || !strings.Contains(pe.Message, "exceeds maximum size") {
+		t.Fatalf("unexpected error: %v", pe)
 	}
 }
